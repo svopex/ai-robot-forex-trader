@@ -9,6 +9,8 @@ Adresar: Z:\RRRRMMDD.yaml
 Struktura souboru:
 
 ```yaml
+Options:
+  trading: enabled
 GBPUSD Short+:
   symbol: GBPUSD
   entry_price: 1.3296
@@ -30,6 +32,10 @@ NZDJPY Long+:
   entry_price: 89.227
   target_price: 89.489
 ```
+
+Sekce `Options` na kořenové úrovni obsahuje volby souboru. `trading: enabled` = obchoduje
+se, `trading: disabled` = ten den se neobchoduje (svátek, bank holiday, víkend – určuje
+program, který soubor vytváří).
 
 MT5 umí běžně číst soubory jen ze svého sandboxu (MQL5\Files nebo Common\Files), ne přímo ze Z:\.
 Pouzij WinAPI kernel32.
@@ -105,6 +111,11 @@ v časovači jednou za sekundu (nečeká na ticky symbolu grafu).
   se `Short` = **SELL STOP** na `entry_price`. Znak `+` v názvu se ignoruje; když
   název neobsahuje Long ani Short, směr se určí podle polohy `target_price` vůči
   `entry_price`.
+- Sekce `Options` (kořenový klíč, velikost písmen nerozhoduje, může být kdekoli v
+  souboru) se nebere jako obchod. Při `trading: disabled` se nezadá nic – ani
+  testovacím tlačítkem – a stav dne je „neobchoduje se (Options)“. Bez sekce nebo bez
+  volby `trading` se obchoduje; neznámá hodnota se zaloguje jako chyba a z opatrnosti
+  se neobchoduje. Neznámé volby v sekci se ignorují.
 - Zadává se **jen přesně v čase**: expert musí běžet už před časem zadání (zadání se
   musí stihnout do 60 s). Když se spustí později, den se vynechá a zaloguje.
 - Zadání proběhne nejvýš **jednou za den** – den se označí jako vyřízený hned (i při
@@ -140,7 +151,8 @@ v časovači jednou za sekundu (nečeká na ticky symbolu grafu).
 ### Testovací tlačítko
 
 Tlačítko **ZADAT OBCHODY ZE SOUBORU (TEST)** nad logem okamžitě načte dnešní soubor
-a zadá z něj pokyny (bez potvrzení). Denní automatické zadání neovlivní. Pokyny
+a zadá z něj pokyny (bez potvrzení; při `Options` `trading: disabled` nezadá nic).
+Denní automatické zadání neovlivní. Pokyny
 zadané po čase zrušení zůstanou až do zavření před koncem seance symbolu.
 
 ### Mapování symbolů
@@ -215,5 +227,5 @@ nové verze se zvýší:
 
 Commit s novou verzí se označí tagem `vX.YY`.
 
-**Aktuální verze: 1.12**
+**Aktuální verze: 1.22**
 

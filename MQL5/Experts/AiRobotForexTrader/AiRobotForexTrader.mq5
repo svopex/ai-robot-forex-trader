@@ -12,11 +12,12 @@
 //|   - v čas zrušení smaže nevyplněné pokyny (v pátek dřív),        |
 //|   - pozice zavře X minut před koncem obchodní seance symbolu,    |
 //|   - vše loguje do grafu pod okno One Click Trading; nad logem je |
-//|     testovací tlačítko, které zadá obchody hned.                 |
+//|     testovací tlačítko, které zadá obchody hned,                 |
+//|   - sekce Options v souboru: trading: disabled = nezadává nic.   |
 //|  Jeden graf obchoduje všechny symboly ze souboru.                |
 //+------------------------------------------------------------------+
 // Verze experta - zvyšuje se před každým nasazením (viz README, Verzování)
-#define EA_VERSION "1.12"
+#define EA_VERSION "1.22"
 
 #property copyright "AiRobotForexTrader"
 #property version   EA_VERSION
@@ -101,6 +102,8 @@ input int    InpOneClickShift            = 60;                // Posun tlačítk
 #define ARFT_MAX_YAML_PCT     1000.0      // horní mez % ze vzdálenosti vstup-cíl v režimu podle YAML
 #define ARFT_MAX_LOG_LINES    50          // horní mez počtu řádků logu v grafu
 #define ARFT_MAX_BUTTON_LINES 10          // horní mez prázdných řádků nad logem
+#define ARFT_PLACE_ERROR      -1          // PlaceOrdersFromFile: chyba souboru / obchodování
+#define ARFT_PLACE_DISABLED   -2          // PlaceOrdersFromFile: soubor má Options trading: disabled
 
 // Testovací tlačítko - rozměry v pixelech při 96 DPI. Souřadnice objektů
 // jsou ve fyzických pixelech, písmo se ale s DPI zvětšuje samo - rozměry
@@ -118,6 +121,12 @@ struct STradeSetup
    string            symbol;  // symbol z YAML (před mapováním na MT5)
    double            entry;   // entry_price - cena stop pokynu
    double            target;  // target_price - cíl pro režim PT/SL podle YAML
+  };
+
+//--- Volby ze sekce Options vstupního souboru (sekce je nepovinná)
+struct SFileOptions
+  {
+   bool              trading; // trading: enabled = obchoduje se; bez volby také
   };
 
 //--- Pravidla letního času podporovaných časových pásem
@@ -346,8 +355,10 @@ void CheckDailyPlacement(const datetime now)
       return;
      }
 
+   //--- Výsledek zadání pro stavový řádek
    const int placed = PlaceOrdersFromFile(now, false);
-   g_dayState = placed < 0 ? "chyba" : StringFormat("zadáno %d", placed);
+   g_dayState = placed == ARFT_PLACE_DISABLED ? "neobchoduje se (Options)"
+                : placed < 0 ? "chyba" : StringFormat("zadáno %d", placed);
   }
 
 //--- Uloží den vyřízeného zadání (přežije restart terminálu)
@@ -368,7 +379,8 @@ string DoneVarName()
 //| Načte dnešní soubor a zadá z něj čekající stop pokyny.           |
 //|  now    - aktuální čas v pásmu burzy (určuje název souboru)      |
 //|  isTest - true = testovací tlačítko (jen jiný komentář pokynu)   |
-//| Vrací počet zadaných pokynů, -1 při chybě souboru / obchodování. |
+//| Vrací počet zadaných pokynů, ARFT_PLACE_ERROR při chybě souboru  |
+//| / obchodování, ARFT_PLACE_DISABLED při Options trading: disabled.|
 //+------------------------------------------------------------------+
 int PlaceOrdersFromFile(const datetime now, const bool isTest)
   {
@@ -376,25 +388,38 @@ int PlaceOrdersFromFile(const datetime now, const bool isTest)
    LogInfo(StringFormat("%s: načítám %s", isTest ? "Test" : "Denní zadání", path));
 
    string reason;
-   if(!TradingAllowed(reason))
-     {
-      LogError("Obchodování není povoleno: " + reason + ".");
-      return(-1);
-     }
-
    string text;
    if(!ReadTextFile(path, text, reason))
      {
       LogError(StringFormat("Soubor %s nelze načíst: %s.", path, reason));
-      return(-1);
+      return(ARFT_PLACE_ERROR);
      }
 
-   STradeSetup setups[];
-   const int count = ParseYaml(text, setups);
+   STradeSetup  setups[];
+   SFileOptions options;
+   ParseYaml(text, setups, options);
+
+   //--- Soubor sám vypíná obchodování ve svátek, bank holiday a o víkendu
+   //--- (Options: trading: disabled) - nezadá se nic, ani testovacím tlačítkem.
+   //--- Záznamy se pak ani neověřují, aby log nezahlcovala varování.
+   if(!options.trading)
+     {
+      LogInfo("Soubor vypíná obchodování (Options trading) - dnes se nic nezadává.");
+      return(ARFT_PLACE_DISABLED);
+     }
+   const int count = ValidateSetups(setups);
    if(count == 0)
      {
       LogWarn("Soubor neobsahuje žádný platný obchod.");
       return(0);
+     }
+
+   //--- Povolení obchodování se kontroluje až po souboru, aby v den bez
+   //--- obchodování nehlásil chybu vypnutý Algo Trading
+   if(!TradingAllowed(reason))
+     {
+      LogError("Obchodování není povoleno: " + reason + ".");
+      return(ARFT_PLACE_ERROR);
      }
 
    int placed = 0;
@@ -1037,22 +1062,26 @@ bool ReadTextFile(const string path, string &text, string &error)
   }
 
 //+------------------------------------------------------------------+
-//| Rozebere YAML se seznamem obchodů:                               |
+//| Rozebere YAML se seznamem obchodů a volbami souboru:             |
+//|   Options:                <- nepovinná sekce voleb (kdekoli)     |
+//|     trading: disabled     <- enabled / disabled                  |
 //|   GBPUSD Short+:          <- řádek bez odsazení = nový obchod    |
 //|     symbol: GBPUSD        <- odsazené řádky = vlastnosti obchodu |
 //|     entry_price: 1.3296                                          |
 //|     target_price: 1.32612                                        |
-//|  text   - obsah souboru                                          |
-//|  setups - out: platné obchody                                    |
+//|  text    - obsah souboru                                         |
+//|  setups  - out: obchody ze souboru, neověřené (ValidateSetups)   |
+//|  options - out: volby ze sekce Options (bez ní se obchoduje)     |
 //| Podporuje jen tento plochý tvar (komentáře #, uvozovky, CRLF).   |
-//| Vrací počet platných obchodů; neúplné se zalogují a přeskočí.    |
 //+------------------------------------------------------------------+
-int ParseYaml(const string text, STradeSetup &setups[])
+void ParseYaml(const string text, STradeSetup &setups[], SFileOptions &options)
   {
    ArrayResize(setups, 0);
+   options.trading = true;
    string lines[];
    const int lineCount = StringSplit(text, '\n', lines);
-   int current = -1;
+   int  current   = -1;    // index rozebíraného obchodu, -1 = žádný
+   bool inOptions = false; // odsazené řádky patří do sekce Options
 
    for(int i = 0; i < lineCount; i++)
      {
@@ -1071,11 +1100,17 @@ int ParseYaml(const string text, STradeSetup &setups[])
         }
       const string key   = Unquote(Trim(StringSubstr(trimmed, 0, colon)));
       const string value = Unquote(Trim(StringSubstr(trimmed, colon + 1)));
+      //--- Klíče se porovnávají bez ohledu na velikost písmen
+      string field = key;
+      StringToLower(field);
 
-      //--- Řádek bez odsazení zakládá nový obchod
+      //--- Řádek bez odsazení zakládá sekci Options nebo nový obchod
       const ushort first = StringGetCharacter(line, 0);
       if(first != ' ' && first != '\t')
         {
+         inOptions = field == "options";
+         if(inOptions)
+            continue;
          current = ArraySize(setups);
          ArrayResize(setups, current + 1);
          setups[current].key    = key;
@@ -1084,12 +1119,24 @@ int ParseYaml(const string text, STradeSetup &setups[])
          setups[current].target = 0.0;
          continue;
         }
+
+      //--- Volby souboru; neznámé volby se ignorují. Neznámá hodnota
+      //--- trading se zaloguje a z opatrnosti se neobchoduje.
+      if(inOptions)
+        {
+         if(field == "trading")
+           {
+            options.trading = StringCompare(value, "enabled", false) == 0;
+            if(!options.trading && StringCompare(value, "disabled", false) != 0)
+               LogError(StringFormat("YAML řádek %d: neznámá hodnota Options trading '%s' (enabled / disabled) - neobchoduje se.",
+                                     i + 1, value));
+           }
+         continue;
+        }
       if(current < 0)
          continue;
 
       //--- Vlastnosti obchodu; neznámé klíče se ignorují
-      string field = key;
-      StringToLower(field);
       if(field == "symbol")
          setups[current].symbol = value;
       else if(field == "entry_price")
@@ -1097,7 +1144,6 @@ int ParseYaml(const string text, STradeSetup &setups[])
       else if(field == "target_price")
          setups[current].target = ParsePrice(value);
      }
-   return(ValidateSetups(setups));
   }
 
 //+------------------------------------------------------------------+
