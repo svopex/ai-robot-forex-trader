@@ -174,7 +174,7 @@ prefixem `ARFT:`.
 | Magic number | `202611110800` | odlišuje pokyny a pozice experta |
 | Ruční mapování symbolů | prázdné | `YAML=MT5` oddělené `;` |
 | Počet řádků logu | `15` | |
-| Prázdné řádky nad logem | `2` | místo pro testovací tlačítko |
+| Prázdné řádky nad logem | `3` | místo pro testovací tlačítko |
 | Tlačítko – odsazení X / Y, posun pod One Click | `12` / `20` / `60` | px při 96 DPI |
 
 ## Spuštění
@@ -211,5 +211,5 @@ nové verze se zvýší:
 
 Commit s novou verzí se označí tagem `vX.YY`.
 
-**Aktuální verze: 1.01**
+**Aktuální verze: 1.02**
 

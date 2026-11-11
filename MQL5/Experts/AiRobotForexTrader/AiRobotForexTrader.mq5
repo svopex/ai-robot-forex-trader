@@ -16,7 +16,7 @@
 //|  Jeden graf obchoduje všechny symboly ze souboru.                |
 //+------------------------------------------------------------------+
 // Verze experta - zvyšuje se před každým nasazením (viz README, Verzování)
-#define EA_VERSION "1.01"
+#define EA_VERSION "1.02"
 
 #property copyright "AiRobotForexTrader"
 #property version   EA_VERSION
@@ -78,7 +78,7 @@ input string InpSymbolMap                = "";                // Ruční mapová
 //--- Zobrazení v grafu
 input group "=== Graf ==="
 input int    InpLogLines                 = 15;                // Počet řádků logu v grafu
-input int    InpButtonLines              = 2;                 // Prázdné řádky nad logem (místo pro testovací tlačítko)
+input int    InpButtonLines              = 3;                 // Prázdné řádky nad logem (místo pro testovací tlačítko)
 input int    InpButtonX                  = 12;                // Testovací tlačítko - odsazení X (px při 96 DPI)
 input int    InpButtonY                  = 20;                // Testovací tlačítko - odsazení Y (px při 96 DPI)
 input int    InpOneClickShift            = 60;                // Posun tlačítka pod okno One Click Trading (px při 96 DPI)
