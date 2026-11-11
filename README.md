@@ -71,3 +71,7 @@ Expert musi prezit svuj restart nebo orevreni a zavreni platformy.
 Loguje vse co se deje na obrazovku pod `obchodovani jednim kliknutim` na obrazovce (existuje nejaky prikaz na log na ibrazovku MT5).
 Pokud nekdo smaze cekajici pokyny, jiz je znovu ten den nezadavas. Zadavas je pouze jednou ve stanoveny cas.
 
+### Testovaci tlacitko
+
+Nad log dej testovaci tlacitko, ktere zada obchody pri stisknuti. Aby se dalo testovat...
+
