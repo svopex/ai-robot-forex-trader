@@ -55,6 +55,8 @@ Dve moznosti:
 * 15 pointu (1.5 pipu) + spread. Znovu do nastaveni.
 * Podle yaml + spread, RRR 1:1, PT i SL se od vstupu oddálí o aktuální spread.
 
+Defaultne prvni moznost.
+
 ### OCO vazba
 
 V YAML může být pro stejný symbol Long i Short (např. AUDJPY). Co s druhým pokynem, když se první otevře?
@@ -70,6 +72,14 @@ Programujes pro MT5.
 Expert musi prezit svuj restart nebo orevreni a zavreni platformy.
 Loguje vse co se deje na obrazovku pod `obchodovani jednim kliknutim` na obrazovce (existuje nejaky prikaz na log na ibrazovku MT5).
 Pokud nekdo smaze cekajici pokyny, jiz je znovu ten den nezadavas. Zadavas je pouze jednou ve stanoveny cas.
+Platforma (expert) se spustí až po čase zadání (např. v 9:30 NY, zadání bylo v 8:00) a dnes se ještě nic nezadalo. Co dělat? Den vynechat.
+Má stisk testovacího tlačítka ovlivnit automatické denní zadání v 08:00? Ne, jen zadá obchody.
+Jeden graf obchoduje vše.
+
+### Mapovani symbolu
+
+Symboly v souboru yaml mohou mit odlisny format nez ma MT5, je treba symboly nejak "chytre" pripadne upravit, namapovat na MT5.
+Aktualne pocitej s tvarem symbolu v yaml podle ukazky vyse.
 
 ### Testovaci tlacitko
 
