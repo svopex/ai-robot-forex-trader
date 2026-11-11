@@ -151,11 +151,12 @@ Market Watch a mapování se zaloguje.
 
 ### Zobrazení v grafu
 
-Pod oknem *One Click Trading* (když je zobrazené, panel se posune pod něj) je
-testovací tlačítko, pod ním stavový řádek (čas burzy, stav dnešního zadání, čas
-zrušení, počet čekajících pokynů a pozic experta) a log – nejnovější zpráva nahoře,
-zelená = úspěch, žlutá = upozornění, červená = chyba. Vše se zapisuje i do Expert
-logu s prefixem `ARFT:`.
+Log se vypisuje příkazem `Comment()` vlevo nahoře – MT5 ho sám posune pod okno
+*One Click Trading*. První řádek je stav (verze, čas burzy, stav dnešního zadání, čas
+zrušení, počet čekajících pokynů a pozic experta), pod ním log – nejnovější zpráva
+nahoře, chyby s prefixem `CHYBA:`, upozornění s `POZOR:`. Nad textem jsou prázdné
+řádky, ve kterých leží testovací tlačítko. Vše se zapisuje i do Expert logu s
+prefixem `ARFT:`.
 
 ## Nastavení
 
@@ -172,8 +173,9 @@ logu s prefixem `ARFT:`.
 | Riziko na obchod | `1.0` | % zůstatku účtu |
 | Magic number | `202611110800` | odlišuje pokyny a pozice experta |
 | Ruční mapování symbolů | prázdné | `YAML=MT5` oddělené `;` |
-| Odsazení X / Y, posun pod One Click | `12` / `22` / `60` | px při 96 DPI |
-| Počet řádků logu, písmo, barvy | `15`, `9` | |
+| Počet řádků logu | `15` | |
+| Prázdné řádky nad logem | `2` | místo pro testovací tlačítko |
+| Tlačítko – odsazení X / Y, posun pod One Click | `12` / `20` / `60` | px při 96 DPI |
 
 ## Spuštění
 
@@ -209,5 +211,5 @@ nové verze se zvýší:
 
 Commit s novou verzí se označí tagem `vX.YY`.
 
-**Aktuální verze: 1.00**
+**Aktuální verze: 1.01**
 

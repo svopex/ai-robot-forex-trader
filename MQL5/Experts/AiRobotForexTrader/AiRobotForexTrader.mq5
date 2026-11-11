@@ -16,7 +16,7 @@
 //|  Jeden graf obchoduje všechny symboly ze souboru.                |
 //+------------------------------------------------------------------+
 // Verze experta - zvyšuje se před každým nasazením (viz README, Verzování)
-#define EA_VERSION "1.00"
+#define EA_VERSION "1.01"
 
 #property copyright "AiRobotForexTrader"
 #property version   EA_VERSION
@@ -77,16 +77,13 @@ input string InpSymbolMap                = "";                // Ruční mapová
 
 //--- Zobrazení v grafu
 input group "=== Graf ==="
-input int    InpPanelX                   = 12;                // Odsazení X (px při 96 DPI)
-input int    InpPanelY                   = 22;                // Odsazení Y (px při 96 DPI)
-input int    InpOneClickShift            = 60;                // Posun pod okno One Click Trading (px při 96 DPI)
 input int    InpLogLines                 = 15;                // Počet řádků logu v grafu
-input int    InpFontSize                 = 9;                 // Velikost písma
-input color  InpColorText                = clrWhite;          // Barva textu
-input color  InpColorBackground          = C'24,24,24';       // Barva pozadí logu
+input int    InpButtonLines              = 2;                 // Prázdné řádky nad logem (místo pro testovací tlačítko)
+input int    InpButtonX                  = 12;                // Testovací tlačítko - odsazení X (px při 96 DPI)
+input int    InpButtonY                  = 20;                // Testovací tlačítko - odsazení Y (px při 96 DPI)
+input int    InpOneClickShift            = 60;                // Posun tlačítka pod okno One Click Trading (px při 96 DPI)
 
 //--- Pojmenované konstanty místo magických čísel v kódu
-#define ARFT_PREFIX           "ARFT_"     // prefix všech objektů experta v grafu
 #define ARFT_LOG_TAG          "ARFT: "    // prefix řádků v Expert logu
 #define ARFT_COMMENT          "ARFT "     // prefix komentáře denních pokynů
 #define ARFT_COMMENT_TEST     "ARFT test " // prefix komentáře pokynů z testovacího tlačítka
@@ -101,21 +98,16 @@ input color  InpColorBackground          = C'24,24,24';       // Barva pozadí l
 #define ARFT_LOTSTEP_EPS      1e-7        // tolerance plovoucí čárky při zaokrouhlení lotu
 #define ARFT_MAX_RISK_PCT     100.0       // horní mez rizika na obchod (%)
 #define ARFT_MAX_LOG_LINES    50          // horní mez počtu řádků logu v grafu
-#define ARFT_MIN_FONT         6           // nejmenší použitelná velikost písma
+#define ARFT_MAX_BUTTON_LINES 10          // horní mez prázdných řádků nad logem
 
-// Rozměry panelu v pixelech při 96 DPI a písmu 9. Souřadnice objektů jsou
-// ve fyzických pixelech, písmo se ale s DPI zvětšuje samo - rozměry se
-// proto za běhu násobí měřítkem (viz Px / Dpi).
-#define ARFT_FONT             "Consolas"  // neproporcionální písmo logu
+// Testovací tlačítko - rozměry v pixelech při 96 DPI. Souřadnice objektů
+// jsou ve fyzických pixelech, písmo se ale s DPI zvětšuje samo - rozměry
+// se proto za běhu násobí měřítkem (viz Dpi).
+#define ARFT_BUTTON           "ARFT_test" // název objektu tlačítka (jediný objekt experta v grafu)
 #define ARFT_BASE_DPI         96.0        // DPI, pro které jsou rozměry níže
-#define ARFT_BASE_FONT        9.0         // velikost písma, pro kterou jsou rozměry níže
-#define ARFT_CHAR_W           6.6         // šířka znaku Consolas 9 při 96 DPI (px)
-#define ARFT_LOG_MAX_CHARS    110         // delší řádky logu se v grafu zkrátí
-#define ARFT_BTN_W            280         // šířka testovacího tlačítka
-#define ARFT_BTN_H            26          // výška testovacího tlačítka
-#define ARFT_LINE_H           16          // výška řádku logu
-#define ARFT_PAD              6           // vnitřní okraj pozadí logu
-#define ARFT_GAP              6           // mezera mezi tlačítkem a logem
+#define ARFT_BTN_W            220         // šířka testovacího tlačítka
+#define ARFT_BTN_H            20          // výška testovacího tlačítka
+#define ARFT_BTN_FONT_SIZE    8           // velikost písma tlačítka
 
 //--- Jeden obchod ze vstupního souboru
 struct STradeSetup
@@ -134,15 +126,6 @@ enum ENUM_ARFT_DST
    ARFT_DST_EU    // EU: poslední neděle března - poslední neděle října, 1:00 UTC
   };
 
-//--- Úroveň zprávy logu (určuje barvu v grafu a prefix v Expert logu)
-enum ENUM_ARFT_LOG
-  {
-   ARFT_LOG_INFO,
-   ARFT_LOG_OK,
-   ARFT_LOG_WARN,
-   ARFT_LOG_ERROR
-  };
-
 //--- Globální stav experta
 CTrade        g_trade;
 int           g_tzStdOffset     = 0;             // standardní posun pásma burzy od UTC (s)
@@ -157,14 +140,12 @@ datetime      g_sweepPauseUntil = 0;             // do kdy (čas serveru) je úk
 string        g_symbolFrom[];                    // mapování symbolů: normalizovaný symbol z YAML
 string        g_symbolTo[];                      // mapování symbolů: symbol MT5 (ruční ze vstupu + nalezené)
 string        g_logText[];                       // řádky logu v grafu, nejnovější na indexu 0
-color         g_logColor[];                      // barvy řádků logu
-bool          g_logDirty        = false;         // přibyl řádek logu, který ještě není v grafu?
 double        g_dpiScale        = 1.0;           // měřítko DPI monitoru (1.0 = 96 DPI)
-bool          g_oneClickShown   = false;         // bylo při posledním rozvržení vidět One Click Trading?
-string        g_statusText      = "";            // naposledy vykreslený stavový řádek
+bool          g_oneClickShown   = false;         // bylo při umístění tlačítka vidět One Click Trading?
+string        g_commentText     = "";            // naposledy vypsaný text Comment()
 
 //+------------------------------------------------------------------+
-//| Inicializace: kontrola vstupů, obnova denního stavu, panel.      |
+//| Inicializace: kontrola vstupů, obnova denního stavu, tlačítko.   |
 //+------------------------------------------------------------------+
 int OnInit()
   {
@@ -185,10 +166,11 @@ int OnInit()
      }
    if(InpRiskPercent <= 0.0 || InpRiskPercent > ARFT_MAX_RISK_PCT || InpFixedStopsPoints <= 0 ||
       InpCloseBeforeSessionEndMin < 0 || InpLogLines < 1 || InpLogLines > ARFT_MAX_LOG_LINES ||
-      InpFontSize < ARFT_MIN_FONT)
+      InpButtonLines < 0 || InpButtonLines > ARFT_MAX_BUTTON_LINES)
      {
       PrintFormat("%sneplatné vstupy - riziko 0..%.0f %%, body PT/SL > 0, minuty před koncem seance >= 0, "
-                  "řádky logu 1..%d, písmo >= %d.", ARFT_LOG_TAG, ARFT_MAX_RISK_PCT, ARFT_MAX_LOG_LINES, ARFT_MIN_FONT);
+                  "řádky logu 1..%d, prázdné řádky nad logem 0..%d.", ARFT_LOG_TAG, ARFT_MAX_RISK_PCT,
+                  ARFT_MAX_LOG_LINES, ARFT_MAX_BUTTON_LINES);
       return(INIT_PARAMETERS_INCORRECT);
      }
    string badPair;
@@ -207,17 +189,12 @@ int OnInit()
    //--- Při změně symbolu / periody grafu se expert neukončí a globální
    //--- proměnné zůstanou - log i čas spuštění se zachovají. Jinak se
    //--- začíná znovu: čas spuštění rozhoduje, zda expert stihne dnešní zadání.
-   //--- Prázdné řádky logu mají mezeru - prázdný popisek MT5 ukáže jako "Label".
    if(UninitializeReason() != REASON_CHARTCHANGE)
      {
       g_initExchange = ExchangeNow();
       ArrayResize(g_logText, InpLogLines);
-      ArrayResize(g_logColor, InpLogLines);
       for(int i = 0; i < InpLogLines; i++)
-        {
-         g_logText[i]  = " ";
-         g_logColor[i] = InpColorText;
-        }
+         g_logText[i] = "";
      }
 
    //--- Den, kdy už bylo zadání vyřízeno, přežije restart v globální
@@ -225,7 +202,9 @@ int OnInit()
    if(GlobalVariableCheck(DoneVarName()))
       g_doneDay = (int)GlobalVariableGet(DoneVarName());
 
-   CreatePanel();
+   //--- OnDeinit komentář smazal - po inicializaci se vypíše znovu
+   g_commentText = "";
+   CreateTestButton();
    if(!EventSetTimer(1))
      {
       Print(ARFT_LOG_TAG, "nelze spustit časovač.");
@@ -251,12 +230,13 @@ int OnInit()
   }
 
 //+------------------------------------------------------------------+
-//| Ukončení: časovač a objekty experta v grafu.                     |
+//| Ukončení: časovač, tlačítko a log v grafu.                       |
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
    EventKillTimer();
-   ObjectsDeleteAll(0, ARFT_PREFIX);
+   ObjectDelete(0, ARFT_BUTTON);
+   Comment("");
    ChartRedraw();
   }
 
@@ -277,7 +257,10 @@ void OnTimer()
       ExpirePendings();
       CloseBeforeSessionEnd();
      }
-   UpdatePanel(now);
+
+   //--- Pojistka k CHARTEVENT_CHART_CHANGE pro přepnutí One Click Trading
+   RelayoutIfNeeded();
+   ShowComment();
   }
 
 //+------------------------------------------------------------------+
@@ -286,15 +269,15 @@ void OnTimer()
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
   {
    //--- Testovací tlačítko zadá obchody hned; denní zadání neovlivní
-   if(id == CHARTEVENT_OBJECT_CLICK && sparam == ARFT_PREFIX + "test")
+   if(id == CHARTEVENT_OBJECT_CLICK && sparam == ARFT_BUTTON)
      {
       ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
       PlaceOrdersFromFile(ExchangeNow(), true);
-      FlushLog();
+      ShowComment();
       ChartRedraw();
      }
-   //--- Panel je ukotvený k rohu grafu; posun a zoom grafu ho neovlivní,
-   //--- přerozvrhuje se jen při zapnutí / vypnutí One Click Trading
+   //--- Tlačítko je ukotvené k rohu grafu; posun a zoom grafu ho neovlivní,
+   //--- přesouvá se jen při zapnutí / vypnutí One Click Trading
    else if(id == CHARTEVENT_CHART_CHANGE)
       RelayoutIfNeeded();
   }
@@ -307,12 +290,15 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
                         const MqlTradeResult &result)
   {
+   //--- Log a stav se obnoví hned jen u transakcí, které mohou něco zalogovat;
+   //--- ostatní (a počty pokynů) obnoví časovač do sekundy
    if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
       OnDealAdded(trans.deal);
    else if(trans.type == TRADE_TRANSACTION_HISTORY_ADD)
       OnOrderArchived(trans.order);
-   if(FlushLog())
-      ChartRedraw();
+   else
+      return;
+   ShowComment();
   }
 
 //====================================================================
@@ -415,7 +401,7 @@ int PlaceOrdersFromFile(const datetime now, const bool isTest)
 
    const string summary = StringFormat("Zadáno %d z %d pokynů.", placed, count);
    if(placed == count)
-      LogOk(summary);
+      LogInfo(summary);
    else
       LogWarn(summary);
    return(placed);
@@ -524,9 +510,9 @@ bool PlaceSetup(const STradeSetup &setup, const bool isTest)
       return(false);
      }
 
-   LogOk(StringFormat("%s: %s %s %s lot @ %s, SL %s, PT %s #%I64u", setup.key, typeName, symbol,
-                      FormatLots(symbol, lots), DoubleToString(entry, digits),
-                      DoubleToString(sl, digits), DoubleToString(tp, digits), g_trade.ResultOrder()));
+   LogInfo(StringFormat("%s: %s %s %s lot @ %s, SL %s, PT %s #%I64u", setup.key, typeName, symbol,
+                        FormatLots(symbol, lots), DoubleToString(entry, digits),
+                        DoubleToString(sl, digits), DoubleToString(tp, digits), g_trade.ResultOrder()));
    return(true);
   }
 
@@ -779,8 +765,8 @@ void OnDealAdded(const ulong deal)
      {
       if(magic != InpMagic)
          return;
-      LogOk(StringFormat("Otevřena pozice %s %s %s lot @ %s.", isBuy ? "BUY" : "SELL", symbol,
-                         FormatLots(symbol, volume), DoubleToString(price, digits)));
+      LogInfo(StringFormat("Otevřena pozice %s %s %s lot @ %s.", isBuy ? "BUY" : "SELL", symbol,
+                           FormatLots(symbol, volume), DoubleToString(price, digits)));
       DeleteOppositePendings(symbol, isBuy);
       return;
      }
@@ -1538,157 +1524,60 @@ bool InTradeSession(const string symbol, const datetime t)
   }
 
 //====================================================================
-// Panel v grafu: testovací tlačítko, stavový řádek a log
+// Zobrazení v grafu: testovací tlačítko a log přes Comment()
 //====================================================================
 
-//--- Vzdálenost přepočtená jen podle DPI (poloha panelu)
+//--- Vzdálenost přepočtená podle DPI monitoru (px)
 int Dpi(const double base)
   {
    return((int)MathRound(base * g_dpiScale));
   }
 
-//--- Rozměr panelu přepočtený podle DPI a velikosti písma (px)
-int Px(const double base)
-  {
-   return(Dpi(base * InpFontSize / ARFT_BASE_FONT));
-  }
-
-//--- Název objektu řádku logu
-string LogLineName(const int index)
-  {
-   return(ARFT_PREFIX + "log" + IntegerToString(index));
-  }
-
 //+------------------------------------------------------------------+
-//| Vytvoří objekty panelu: pozadí, testovací tlačítko, stavový      |
-//| řádek a řádky logu.                                              |
+//| Vytvoří testovací tlačítko. Log vypisuje Comment() vlevo nahoře  |
+//| (MT5 ho sám posune pod okno One Click Trading); tlačítko leží    |
+//| v prázdných řádcích na začátku komentáře, tedy nad logem.        |
 //+------------------------------------------------------------------+
-void CreatePanel()
+void CreateTestButton()
   {
-   ObjectsDeleteAll(0, ARFT_PREFIX);
-
-   //--- Pozadí pod stavovým řádkem a logem, aby text šel číst na grafu
-   const string bg = ARFT_PREFIX + "bg";
-   ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, InpColorBackground);
-   ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-   ObjectSetInteger(0, bg, OBJPROP_COLOR, clrDimGray);
-   SetCommonProps(bg, 0);
-
-   //--- Testovací tlačítko nad logem
-   const string btn = ARFT_PREFIX + "test";
-   ObjectCreate(0, btn, OBJ_BUTTON, 0, 0, 0);
-   ObjectSetString(0, btn, OBJPROP_TEXT, "ZADAT OBCHODY ZE SOUBORU (TEST)");
-   ObjectSetString(0, btn, OBJPROP_FONT, ARFT_FONT);
-   ObjectSetInteger(0, btn, OBJPROP_FONTSIZE, InpFontSize);
-   ObjectSetInteger(0, btn, OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, btn, OBJPROP_BGCOLOR, clrSteelBlue);
-   ObjectSetInteger(0, btn, OBJPROP_BORDER_COLOR, clrLightSteelBlue);
-   ObjectSetInteger(0, btn, OBJPROP_STATE, false);
-   SetCommonProps(btn, 2);
-
-   //--- Stavový řádek a řádky logu; nové objekty jsou prázdné, log
-   //--- i stavový řádek se proto vypíšou znovu
-   CreateTextLabel(ARFT_PREFIX + "status");
-   for(int i = 0; i < InpLogLines; i++)
-      CreateTextLabel(LogLineName(i));
-   g_statusText = "";
-   g_logDirty   = true;
-   FlushLog();
-   LayoutPanel();
+   ObjectDelete(0, ARFT_BUTTON);
+   ObjectCreate(0, ARFT_BUTTON, OBJ_BUTTON, 0, 0, 0);
+   ObjectSetString(0, ARFT_BUTTON, OBJPROP_TEXT, "ZADAT OBCHODY ZE SOUBORU (TEST)");
+   ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_FONTSIZE, ARFT_BTN_FONT_SIZE);
+   ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_BGCOLOR, clrSteelBlue);
+   ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_BORDER_COLOR, clrLightSteelBlue);
+   ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_XSIZE, Dpi(ARFT_BTN_W));
+   ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_YSIZE, Dpi(ARFT_BTN_H));
+   ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_HIDDEN, true);
+   PlaceTestButton();
   }
 
-//--- Společné vlastnosti objektů panelu (levý horní roh, nevybíratelné,
-//--- skryté v seznamu objektů)
-void SetCommonProps(const string name, const int zorder)
-  {
-   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-   ObjectSetInteger(0, name, OBJPROP_BACK, false);
-   ObjectSetInteger(0, name, OBJPROP_ZORDER, zorder);
-  }
-
-//--- Textový popisek panelu (písmo logu)
-void CreateTextLabel(const string name)
-  {
-   ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
-   ObjectSetString(0, name, OBJPROP_FONT, ARFT_FONT);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpFontSize);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, InpColorText);
-   ObjectSetString(0, name, OBJPROP_TEXT, " ");
-   SetCommonProps(name, 1);
-  }
-
-//--- Poloha a velikost objektu panelu
-void PlaceObject(const string name, const int x, const int y, const int width, const int height)
-  {
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
-   if(width > 0)
-     {
-      ObjectSetInteger(0, name, OBJPROP_XSIZE, width);
-      ObjectSetInteger(0, name, OBJPROP_YSIZE, height);
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| Rozvrhne panel pod okno One Click Trading (je-li zobrazené):     |
-//| shora testovací tlačítko, pod ním stavový řádek a log.           |
-//+------------------------------------------------------------------+
-void LayoutPanel()
+//--- Umístí tlačítko; při zobrazeném okně One Click Trading pod něj
+void PlaceTestButton()
   {
    g_oneClickShown = ChartGetInteger(0, CHART_SHOW_ONE_CLICK) != 0;
-   const int x     = Dpi(InpPanelX);
-   int       y     = Dpi(InpPanelY) + (g_oneClickShown ? Dpi(InpOneClickShift) : 0);
-   const int pad   = Px(ARFT_PAD);
-   const int lineH = Px(ARFT_LINE_H);
-   const int width = Px(2 * ARFT_PAD + ARFT_LOG_MAX_CHARS * ARFT_CHAR_W);
-
-   PlaceObject(ARFT_PREFIX + "test", x, y, Px(ARFT_BTN_W), Px(ARFT_BTN_H));
-   y += Px(ARFT_BTN_H) + Px(ARFT_GAP);
-
-   //--- Pozadí pokrývá stavový řádek a všechny řádky logu
-   PlaceObject(ARFT_PREFIX + "bg", x, y, width, 2 * pad + (InpLogLines + 1) * lineH);
-   y += pad;
-   PlaceObject(ARFT_PREFIX + "status", x + pad, y, 0, 0);
-   for(int i = 0; i < InpLogLines; i++)
-      PlaceObject(LogLineName(i), x + pad, y + (i + 1) * lineH, 0, 0);
+   ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_XDISTANCE, Dpi(InpButtonX));
+   ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_YDISTANCE,
+                    Dpi(InpButtonY) + (g_oneClickShown ? Dpi(InpOneClickShift) : 0));
    ChartRedraw();
   }
 
-//--- Přerozvrhne panel, když se zapnulo / vypnulo okno One Click Trading
+//--- Přesune tlačítko, když se zapnulo / vypnulo okno One Click Trading
 void RelayoutIfNeeded()
   {
    if((ChartGetInteger(0, CHART_SHOW_ONE_CLICK) != 0) != g_oneClickShown)
-      LayoutPanel();
-  }
-
-//--- Přepíše řádky logu v grafu, pokud přibyla zpráva. Volá se jednou
-//--- na konci události, ne po každé zprávě. Vrací true, když se něco
-//--- změnilo (graf je pak potřeba překreslit).
-bool FlushLog()
-  {
-   if(!g_logDirty)
-      return(false);
-   g_logDirty = false;
-   for(int i = 0; i < InpLogLines; i++)
-     {
-      ObjectSetString(0, LogLineName(i), OBJPROP_TEXT, g_logText[i]);
-      ObjectSetInteger(0, LogLineName(i), OBJPROP_COLOR, g_logColor[i]);
-     }
-   return(true);
+      PlaceTestButton();
   }
 
 //+------------------------------------------------------------------+
-//| Stavový řádek (čas burzy, stav dnešního zadání, počty pokynů a   |
-//| pozic) a nové řádky logu. Graf se překreslí jen při změně.       |
+//| Vypíše vlevo nahoře stav (čas burzy, dnešní zadání, počty pokynů |
+//| a pozic experta) a log, nejnovější zpráva nahoře. Comment() se   |
+//| volá jen při změně textu.                                        |
 //+------------------------------------------------------------------+
-void UpdatePanel(const datetime now)
+void ShowComment()
   {
-   RelayoutIfNeeded();
-
    //--- Počty čekajících pokynů a pozic experta
    int pendings = 0;
    for(int i = OrdersTotal() - 1; i >= 0; i--)
@@ -1699,52 +1588,45 @@ void UpdatePanel(const datetime now)
       if(OurPositionTicket(i) != 0)
          positions++;
 
-   //--- Čas jen na minuty - stavový řádek se pak mění zřídka
+   //--- Prázdné řádky nahoře nechávají místo pro testovací tlačítko;
+   //--- čas jen na minuty, aby se text neměnil každou sekundu
+   const datetime now = ExchangeNow();
    const string dayState = g_doneDay == DayKey(now) ? (g_dayState == "" ? "vyřízeno" : g_dayState) : "čeká";
-   const string status = StringFormat("Burza %s | zadání %s: %s | zrušení %s | čekající %d | pozice %d",
-                                      TimeToString(now, TIME_MINUTES), InpPlaceTime, dayState,
-                                      TimeToString(CancelTimeFor(now), TIME_MINUTES), pendings, positions);
-   bool redraw = FlushLog();
-   if(status != g_statusText)
-     {
-      g_statusText = status;
-      ObjectSetString(0, ARFT_PREFIX + "status", OBJPROP_TEXT, status);
-      redraw = true;
-     }
-   if(redraw)
-      ChartRedraw();
+   string text = "";
+   for(int i = 0; i < InpButtonLines; i++)
+      text += " \n";
+   text += StringFormat("AiRobotForexTrader %s | burza %s | zadání %s: %s | zrušení %s | čekající %d | pozice %d",
+                        EA_VERSION, TimeToString(now, TIME_MINUTES), InpPlaceTime, dayState,
+                        TimeToString(CancelTimeFor(now), TIME_MINUTES), pendings, positions);
+   for(int i = 0; i < ArraySize(g_logText) && StringLen(g_logText[i]) > 0; i++)
+      text += "\n" + g_logText[i];
+
+   if(text == g_commentText)
+      return;
+   g_commentText = text;
+   Comment(text);
   }
 
 //+------------------------------------------------------------------+
 //| Zápis do logu: Expert log (Print) hned, log v grafu při nejbližším|
-//| FlushLog. Nejnovější řádek je nahoře a začíná časem burzy.       |
-//|  level - úroveň zprávy (barva v grafu, prefix v Expert logu)     |
-//|  text  - zpráva                                                  |
+//| ShowComment. Řádek v grafu začíná časem burzy.                   |
+//|  prefix - označení úrovně ("CHYBA: ", "POZOR: " nebo prázdné)    |
+//|  text   - zpráva                                                 |
 //+------------------------------------------------------------------+
-void Log(const ENUM_ARFT_LOG level, const string text)
+void Log(const string prefix, const string text)
   {
-   Print(ARFT_LOG_TAG, level == ARFT_LOG_ERROR ? "CHYBA: " : level == ARFT_LOG_WARN ? "POZOR: " : "", text);
+   Print(ARFT_LOG_TAG, prefix, text);
 
+   //--- Starší řádky se posunou dolů, nejstarší vypadne
    const int capacity = ArraySize(g_logText);
    if(capacity == 0)
       return;
-
-   //--- Starší řádky se posunou dolů, nejstarší vypadne
    for(int i = capacity - 1; i > 0; i--)
-     {
-      g_logText[i]  = g_logText[i - 1];
-      g_logColor[i] = g_logColor[i - 1];
-     }
-   const string line = TimeToString(ExchangeNow(), TIME_SECONDS) + " " + text;
-   g_logText[0]  = StringLen(line) > ARFT_LOG_MAX_CHARS ? StringSubstr(line, 0, ARFT_LOG_MAX_CHARS - 1) + "…" : line;
-   g_logColor[0] = level == ARFT_LOG_OK    ? clrLimeGreen :
-                   level == ARFT_LOG_WARN  ? clrGold :
-                   level == ARFT_LOG_ERROR ? clrTomato : InpColorText;
-   g_logDirty = true;
+      g_logText[i] = g_logText[i - 1];
+   g_logText[0] = TimeToString(ExchangeNow(), TIME_SECONDS) + " " + prefix + text;
   }
 
-void LogInfo(const string text)  { Log(ARFT_LOG_INFO, text); }
-void LogOk(const string text)    { Log(ARFT_LOG_OK, text); }
-void LogWarn(const string text)  { Log(ARFT_LOG_WARN, text); }
-void LogError(const string text) { Log(ARFT_LOG_ERROR, text); }
+void LogInfo(const string text)  { Log("", text); }
+void LogWarn(const string text)  { Log("POZOR: ", text); }
+void LogError(const string text) { Log("CHYBA: ", text); }
 //+------------------------------------------------------------------+
