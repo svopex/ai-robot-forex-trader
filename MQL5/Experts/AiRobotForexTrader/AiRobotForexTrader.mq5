@@ -5,8 +5,8 @@
 //|   - ve stanovený čas (časové pásmo burzy) načte soubor mimo      |
 //|     sandbox MT5 přes kernel32.dll a zadá čekající BUY STOP /     |
 //|     SELL STOP pokyny,                                            |
-//|   - PT a SL: pevně body + spread, nebo podle YAML + spread       |
-//|     (RRR 1:1),                                                   |
+//|   - PT a SL: pevně body + spread, nebo podle YAML (zadané % ze   |
+//|     vzdálenosti vstup-cíl) + spread (RRR 1:1),                   |
 //|   - objem se dopočítá z rizika (% zůstatku účtu),                |
 //|   - OCO: po otevření pozice smaže protilehlý pokyn téhož symbolu,|
 //|   - v čas zrušení smaže nevyplněné pokyny (v pátek dřív),        |
@@ -16,7 +16,7 @@
 //|  Jeden graf obchoduje všechny symboly ze souboru.                |
 //+------------------------------------------------------------------+
 // Verze experta - zvyšuje se před každým nasazením (viz README, Verzování)
-#define EA_VERSION "1.02"
+#define EA_VERSION "1.12"
 
 #property copyright "AiRobotForexTrader"
 #property version   EA_VERSION
@@ -49,7 +49,7 @@ uint GetLastError(void);
 enum ENUM_ARFT_STOPS
   {
    ARFT_STOPS_FIXED = 0, // Pevně: body + spread
-   ARFT_STOPS_YAML  = 1  // Podle YAML + spread (RRR 1:1)
+   ARFT_STOPS_YAML  = 1  // Podle YAML (% z cíle) + spread (RRR 1:1)
   };
 
 //--- Vstupní soubor
@@ -68,6 +68,7 @@ input int    InpCloseBeforeSessionEndMin = 10;                // Zavřít pozice
 input group "=== Obchod ==="
 input ENUM_ARFT_STOPS InpStopsMode       = ARFT_STOPS_FIXED;  // Velikost PT a SL
 input int    InpFixedStopsPoints         = 15;                // Pevná vzdálenost PT a SL (body, + spread)
+input double InpYamlStopsPercent         = 100.0;             // Podle YAML: % ze vzdálenosti vstup-cíl (100 = celý cíl)
 input double InpRiskPercent              = 1.0;               // Riziko na obchod (% zůstatku)
 input long   InpMagic                    = 202611110800;      // Magic number
 
@@ -97,6 +98,7 @@ input int    InpOneClickShift            = 60;                // Posun tlačítk
 #define ARFT_TICK_WAIT_TRIES  20          // počet pokusů o načtení ticku
 #define ARFT_LOTSTEP_EPS      1e-7        // tolerance plovoucí čárky při zaokrouhlení lotu
 #define ARFT_MAX_RISK_PCT     100.0       // horní mez rizika na obchod (%)
+#define ARFT_MAX_YAML_PCT     1000.0      // horní mez % ze vzdálenosti vstup-cíl v režimu podle YAML
 #define ARFT_MAX_LOG_LINES    50          // horní mez počtu řádků logu v grafu
 #define ARFT_MAX_BUTTON_LINES 10          // horní mez prázdných řádků nad logem
 
@@ -165,12 +167,13 @@ int OnInit()
       return(INIT_PARAMETERS_INCORRECT);
      }
    if(InpRiskPercent <= 0.0 || InpRiskPercent > ARFT_MAX_RISK_PCT || InpFixedStopsPoints <= 0 ||
+      InpYamlStopsPercent <= 0.0 || InpYamlStopsPercent > ARFT_MAX_YAML_PCT ||
       InpCloseBeforeSessionEndMin < 0 || InpLogLines < 1 || InpLogLines > ARFT_MAX_LOG_LINES ||
       InpButtonLines < 0 || InpButtonLines > ARFT_MAX_BUTTON_LINES)
      {
-      PrintFormat("%sneplatné vstupy - riziko 0..%.0f %%, body PT/SL > 0, minuty před koncem seance >= 0, "
-                  "řádky logu 1..%d, prázdné řádky nad logem 0..%d.", ARFT_LOG_TAG, ARFT_MAX_RISK_PCT,
-                  ARFT_MAX_LOG_LINES, ARFT_MAX_BUTTON_LINES);
+      PrintFormat("%sneplatné vstupy - riziko 0..%.0f %%, body PT/SL > 0, %% z YAML 0..%.0f, "
+                  "minuty před koncem seance >= 0, řádky logu 1..%d, prázdné řádky nad logem 0..%d.",
+                  ARFT_LOG_TAG, ARFT_MAX_RISK_PCT, ARFT_MAX_YAML_PCT, ARFT_MAX_LOG_LINES, ARFT_MAX_BUTTON_LINES);
       return(INIT_PARAMETERS_INCORRECT);
      }
    string badPair;
@@ -218,7 +221,7 @@ int OnInit()
                         InpPendingCancelTimeFriday, InpCloseBeforeSessionEndMin));
    LogInfo(StringFormat("PT/SL: %s, riziko %.2f %% zůstatku, soubor %s.",
                         InpStopsMode == ARFT_STOPS_FIXED ? StringFormat("%d b + spread", InpFixedStopsPoints)
-                                                         : "podle YAML + spread",
+                                                         : StringFormat("%g %% z YAML + spread", InpYamlStopsPercent),
                         InpRiskPercent, InputFilePath(ExchangeNow())));
 
    if(!MQLInfoInteger(MQL_DLLS_ALLOWED))
@@ -451,7 +454,8 @@ bool PlaceSetup(const STradeSetup &setup, const bool isTest)
    const double entry  = NormalizePrice(symbol, setup.entry);
 
    //--- Vzdálenost PT i SL od vstupu (RRR 1:1), oddálená o aktuální spread:
-   //--- pevný počet bodů, nebo vzdálenost vstup-cíl ze souboru
+   //--- pevný počet bodů, nebo zadané procento ze vzdálenosti vstup-cíl ze
+   //--- souboru (např. 30 % = PT i SL ve 30 % cesty k target_price)
    double distance = InpFixedStopsPoints * point + spread;
    if(InpStopsMode == ARFT_STOPS_YAML)
      {
@@ -462,7 +466,7 @@ bool PlaceSetup(const STradeSetup &setup, const bool isTest)
                                setup.key, DoubleToString(setup.target, digits)));
          return(false);
         }
-      distance = yamlDistance + spread;
+      distance = yamlDistance * InpYamlStopsPercent / 100.0 + spread;
      }
 
    //--- Stop pokyn musí ležet za trhem (BUY STOP nad Ask, SELL STOP pod

@@ -57,6 +57,9 @@ Dve moznosti:
 
 Defaultne prvni moznost.
 
+U moznosti podle yaml se v nastaveni zadava, kolik procent ze vzdalenosti vstup-cil se
+pouzije. Defaultne 100 %, lze zadat napr. 30 %, 60 % nebo 130 %.
+
 ### OCO vazba
 
 V YAML může být pro stejný symbol Long i Short (např. AUDJPY). Co s druhým pokynem, když se první otevře?
@@ -114,8 +117,8 @@ v časovači jednou za sekundu (nečeká na ticky symbolu grafu).
 
 - **Pevně** (výchozí): PT i SL jsou od vstupu ve vzdálenosti
   `body (15) × point + aktuální spread`.
-- **Podle YAML**: vzdálenost `|target_price − entry_price| + aktuální spread`, PT i SL
-  stejně daleko (RRR 1:1).
+- **Podle YAML**: vzdálenost `|target_price − entry_price| × % z YAML / 100 + aktuální
+  spread`, PT i SL stejně daleko (RRR 1:1); 100 % = celý cíl.
 - Objem se dopočítá tak, aby ztráta na SL byla `riziko %` (výchozí 1 %) zůstatku účtu,
   zaokrouhlí se dolů na krok objemu. Když nestačí ani minimální lot, pokyn se nezadá.
 
@@ -168,8 +171,9 @@ prefixem `ARFT:`.
 | Čas zrušení | `11:00` | `pending_cancel_time` |
 | Čas zrušení v pátek | `09:00` | `pending_cancel_time_friday` |
 | Zavřít X minut před koncem seance | `10` | |
-| Velikost PT a SL | Pevně | Pevně: body + spread / Podle YAML + spread (RRR 1:1) |
+| Velikost PT a SL | Pevně | Pevně: body + spread / Podle YAML (% z cíle) + spread (RRR 1:1) |
 | Pevná vzdálenost PT a SL | `15` | body (15 = 1,5 pipu), přičte se spread |
+| Podle YAML: % ze vzdálenosti vstup-cíl | `100` | jen v režimu podle YAML; např. 30, 60, 130 |
 | Riziko na obchod | `1.0` | % zůstatku účtu |
 | Magic number | `202611110800` | odlišuje pokyny a pozice experta |
 | Ruční mapování symbolů | prázdné | `YAML=MT5` oddělené `;` |
@@ -211,5 +215,5 @@ nové verze se zvýší:
 
 Commit s novou verzí se označí tagem `vX.YY`.
 
-**Aktuální verze: 1.02**
+**Aktuální verze: 1.12**
 
