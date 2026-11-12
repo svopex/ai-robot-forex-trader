@@ -178,6 +178,10 @@ nahoře, chyby s prefixem `CHYBA:`, upozornění s `POZOR:`. Nad textem jsou pr�
 řádky, ve kterých leží testovací tlačítko. Vše se zapisuje i do Expert logu s
 prefixem `ARFT:`.
 
+Vlevo od testovacího tlačítka je **kontrolka běhu** – zelené kolečko, které každou
+sekundu přepne mezi světle a tmavě zelenou. Dokud bliká, běží hlavní smyčka experta
+(i o víkendu bez ticků); když přestane, expert neběží nebo je zaseknutý.
+
 ## Nastavení
 
 | Parametr | Výchozí | Popis |
@@ -196,7 +200,7 @@ prefixem `ARFT:`.
 | Ruční mapování symbolů | prázdné | `YAML=MT5` oddělené `;` |
 | Počet řádků logu | `15` | |
 | Prázdné řádky nad logem | `3` | místo pro testovací tlačítko |
-| Tlačítko – odsazení X / Y, posun pod One Click | `12` / `20` / `60` | px při 96 DPI |
+| Tlačítko s kontrolkou – odsazení X / Y, posun pod One Click | `12` / `20` / `60` | px při 96 DPI |
 
 ## Spuštění
 
@@ -232,5 +236,5 @@ nové verze se zvýší:
 
 Commit s novou verzí se označí tagem `vX.YY`.
 
-**Aktuální verze: 1.23**
+**Aktuální verze: 1.33**
 

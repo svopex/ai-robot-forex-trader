@@ -12,12 +12,13 @@
 //|   - v čas zrušení smaže nevyplněné pokyny (v pátek dřív),        |
 //|   - pozice zavře X minut před koncem obchodní seance symbolu,    |
 //|   - vše loguje do grafu pod okno One Click Trading; nad logem je |
-//|     testovací tlačítko, které zadá obchody hned,                 |
+//|     testovací tlačítko, které zadá obchody hned, a před ním      |
+//|     kontrolka, která bliká, dokud běží hlavní smyčka experta,    |
 //|   - sekce Options v souboru: trading: disabled = nezadává nic.   |
 //|  Jeden graf obchoduje všechny symboly ze souboru.                |
 //+------------------------------------------------------------------+
 // Verze experta - zvyšuje se před každým nasazením (viz README, Verzování)
-#define EA_VERSION "1.23"
+#define EA_VERSION "1.33"
 
 #property copyright "AiRobotForexTrader"
 #property version   EA_VERSION
@@ -81,7 +82,7 @@ input string InpSymbolMap                = "";                // Ruční mapová
 input group "=== Graf ==="
 input int    InpLogLines                 = 15;                // Počet řádků logu v grafu
 input int    InpButtonLines              = 3;                 // Prázdné řádky nad logem (místo pro testovací tlačítko)
-input int    InpButtonX                  = 12;                // Testovací tlačítko - odsazení X (px při 96 DPI)
+input int    InpButtonX                  = 12;                // Testovací tlačítko s kontrolkou - odsazení X (px při 96 DPI)
 input int    InpButtonY                  = 20;                // Testovací tlačítko - odsazení Y (px při 96 DPI)
 input int    InpOneClickShift            = 60;                // Posun tlačítka pod okno One Click Trading (px při 96 DPI)
 
@@ -108,11 +109,21 @@ input int    InpOneClickShift            = 60;                // Posun tlačítk
 // Testovací tlačítko - rozměry v pixelech při 96 DPI. Souřadnice objektů
 // jsou ve fyzických pixelech, písmo se ale s DPI zvětšuje samo - rozměry
 // se proto za běhu násobí měřítkem (viz Dpi).
-#define ARFT_BUTTON           "ARFT_test" // název objektu tlačítka (jediný objekt experta v grafu)
+#define ARFT_OBJ_PREFIX       "ARFT_"     // prefix všech objektů experta v grafu - mažou se podle něj
+#define ARFT_BUTTON           "ARFT_test" // název objektu testovacího tlačítka
 #define ARFT_BASE_DPI         96.0        // DPI, pro které jsou rozměry níže
 #define ARFT_BTN_W            220         // šířka testovacího tlačítka
 #define ARFT_BTN_H            20          // výška testovacího tlačítka
 #define ARFT_BTN_FONT_SIZE    8           // velikost písma tlačítka
+
+// Kontrolka běhu - kolečko vlevo od tlačítka, které každou sekundu
+// (v OnTimer) přepne barvu. Když přestane blikat, hlavní smyčka neběží.
+#define ARFT_BEAT             "ARFT_beat" // název objektu kontrolky
+#define ARFT_BEAT_W           18          // místo pro kontrolku před tlačítkem (px při 96 DPI)
+#define ARFT_BEAT_FONT_SIZE   10          // velikost kolečka
+#define ARFT_BEAT_CHAR        108         // plné kolečko ve fontu Wingdings
+#define ARFT_BEAT_COLOR_ON    clrLimeGreen // jasná fáze bliknutí
+#define ARFT_BEAT_COLOR_OFF   clrDarkGreen // tmavá fáze bliknutí
 
 //--- Jeden obchod ze vstupního souboru
 struct STradeSetup
@@ -216,7 +227,7 @@ int OnInit()
 
    //--- OnDeinit komentář smazal - po inicializaci se vypíše znovu
    g_commentText = "";
-   CreateTestButton();
+   CreateControls();
    if(!EventSetTimer(1))
      {
       Print(ARFT_LOG_TAG, "nelze spustit časovač.");
@@ -242,12 +253,12 @@ int OnInit()
   }
 
 //+------------------------------------------------------------------+
-//| Ukončení: časovač, tlačítko a log v grafu.                       |
+//| Ukončení: časovač, tlačítko, kontrolka a log v grafu.            |
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
    EventKillTimer();
-   ObjectDelete(0, ARFT_BUTTON);
+   ObjectsDeleteAll(0, ARFT_OBJ_PREFIX);
    Comment("");
    ChartRedraw();
   }
@@ -273,6 +284,8 @@ void OnTimer()
    //--- Pojistka k CHARTEVENT_CHART_CHANGE pro přepnutí One Click Trading
    RelayoutIfNeeded();
    ShowComment();
+   //--- Bliknutí až na konci průchodu: zaseknutá smyčka kontrolku zastaví
+   BlinkHeartbeat();
   }
 
 //+------------------------------------------------------------------+
@@ -1610,7 +1623,7 @@ bool InTradeSession(const string symbol, const datetime t)
   }
 
 //====================================================================
-// Zobrazení v grafu: testovací tlačítko a log přes Comment()
+// Zobrazení v grafu: kontrolka běhu, testovací tlačítko a log přes Comment()
 //====================================================================
 
 //--- Vzdálenost přepočtená podle DPI monitoru (px)
@@ -1620,13 +1633,28 @@ int Dpi(const double base)
   }
 
 //+------------------------------------------------------------------+
-//| Vytvoří testovací tlačítko. Log vypisuje Comment() vlevo nahoře  |
-//| (MT5 ho sám posune pod okno One Click Trading); tlačítko leží    |
-//| v prázdných řádcích na začátku komentáře, tedy nad logem.        |
+//| Vytvoří kontrolku běhu a testovací tlačítko. Log vypisuje        |
+//| Comment() vlevo nahoře (MT5 ho sám posune pod okno One Click     |
+//| Trading); oba objekty leží v prázdných řádcích na začátku        |
+//| komentáře, tedy nad logem.                                       |
 //+------------------------------------------------------------------+
-void CreateTestButton()
+void CreateControls()
   {
-   ObjectDelete(0, ARFT_BUTTON);
+   //--- Objekty z předchozího běhu se smažou najednou podle prefixu
+   ObjectsDeleteAll(0, ARFT_OBJ_PREFIX);
+
+   //--- Kontrolka běhu: kolečko z Wingdings, barvu přepíná BlinkHeartbeat.
+   //--- Ukotvená levým středem, aby šla svisle vycentrovat na tlačítko.
+   ObjectCreate(0, ARFT_BEAT, OBJ_LABEL, 0, 0, 0);
+   ObjectSetString(0, ARFT_BEAT, OBJPROP_FONT, "Wingdings");
+   ObjectSetString(0, ARFT_BEAT, OBJPROP_TEXT, CharToString(ARFT_BEAT_CHAR));
+   ObjectSetString(0, ARFT_BEAT, OBJPROP_TOOLTIP, "Bliká, dokud běží hlavní smyčka experta");
+   ObjectSetInteger(0, ARFT_BEAT, OBJPROP_FONTSIZE, ARFT_BEAT_FONT_SIZE);
+   ObjectSetInteger(0, ARFT_BEAT, OBJPROP_COLOR, ARFT_BEAT_COLOR_OFF);
+   ObjectSetInteger(0, ARFT_BEAT, OBJPROP_ANCHOR, ANCHOR_LEFT);
+   ObjectSetInteger(0, ARFT_BEAT, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, ARFT_BEAT, OBJPROP_HIDDEN, true);
+
    ObjectCreate(0, ARFT_BUTTON, OBJ_BUTTON, 0, 0, 0);
    ObjectSetString(0, ARFT_BUTTON, OBJPROP_TEXT, "ZADAT OBCHODY ZE SOUBORU (TEST)");
    ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_FONTSIZE, ARFT_BTN_FONT_SIZE);
@@ -1637,24 +1665,40 @@ void CreateTestButton()
    ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_YSIZE, Dpi(ARFT_BTN_H));
    ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_HIDDEN, true);
-   PlaceTestButton();
+   PlaceControls();
   }
 
-//--- Umístí tlačítko; při zobrazeném okně One Click Trading pod něj
-void PlaceTestButton()
+//+------------------------------------------------------------------+
+//| Umístí kontrolku a za ni tlačítko; při zobrazeném okně One Click |
+//| Trading pod něj. Kontrolka je svisle na středu tlačítka.         |
+//+------------------------------------------------------------------+
+void PlaceControls()
   {
    g_oneClickShown = ChartGetInteger(0, CHART_SHOW_ONE_CLICK) != 0;
-   ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_XDISTANCE, Dpi(InpButtonX));
-   ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_YDISTANCE,
-                    Dpi(InpButtonY) + (g_oneClickShown ? Dpi(InpOneClickShift) : 0));
+   const int top = Dpi(InpButtonY) + (g_oneClickShown ? Dpi(InpOneClickShift) : 0);
+   ObjectSetInteger(0, ARFT_BEAT, OBJPROP_XDISTANCE, Dpi(InpButtonX));
+   ObjectSetInteger(0, ARFT_BEAT, OBJPROP_YDISTANCE, top + Dpi(ARFT_BTN_H) / 2);
+   ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_XDISTANCE, Dpi(InpButtonX + ARFT_BEAT_W));
+   ObjectSetInteger(0, ARFT_BUTTON, OBJPROP_YDISTANCE, top);
    ChartRedraw();
   }
 
-//--- Přesune tlačítko, když se zapnulo / vypnulo okno One Click Trading
+//--- Přesune ovládání, když se zapnulo / vypnulo okno One Click Trading
 void RelayoutIfNeeded()
   {
    if((ChartGetInteger(0, CHART_SHOW_ONE_CLICK) != 0) != g_oneClickShown)
-      PlaceTestButton();
+      PlaceControls();
+  }
+
+//--- Přepne barvu kontrolky běhu (volá se jednou za průchod OnTimer);
+//--- fáze bliknutí se čte z aktuální barvy objektu. Překreslení je
+//--- nutné: bez ticků (víkend, klidný trh) by se graf sám nepřekreslil
+//--- a kontrolka by vypadala zastaveně.
+void BlinkHeartbeat()
+  {
+   const bool wasOn = (color)ObjectGetInteger(0, ARFT_BEAT, OBJPROP_COLOR) == ARFT_BEAT_COLOR_ON;
+   ObjectSetInteger(0, ARFT_BEAT, OBJPROP_COLOR, wasOn ? ARFT_BEAT_COLOR_OFF : ARFT_BEAT_COLOR_ON);
+   ChartRedraw();
   }
 
 //+------------------------------------------------------------------+
