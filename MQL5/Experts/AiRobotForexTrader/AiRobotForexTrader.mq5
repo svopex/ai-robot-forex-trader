@@ -17,7 +17,7 @@
 //|  Jeden graf obchoduje všechny symboly ze souboru.                |
 //+------------------------------------------------------------------+
 // Verze experta - zvyšuje se před každým nasazením (viz README, Verzování)
-#define EA_VERSION "1.22"
+#define EA_VERSION "1.23"
 
 #property copyright "AiRobotForexTrader"
 #property version   EA_VERSION
@@ -95,8 +95,8 @@ input int    InpOneClickShift            = 60;                // Posun tlačítk
 #define ARFT_SWEEP_PAUSE_SEC  30          // pauza úklidu po neúspěšném smazání / zavření
 #define ARFT_MIN_EXPIRY_SEC   60          // nejkratší platnost pokynu, se kterou ji ještě posílat serveru
 #define ARFT_MAX_FILE_SIZE    1048576     // horní mez velikosti vstupního souboru (B)
-#define ARFT_TICK_WAIT_MS     50          // čekání na první tick nově přidaného symbolu (ms)
-#define ARFT_TICK_WAIT_TRIES  20          // počet pokusů o načtení ticku
+#define ARFT_DATA_WAIT_MS     3000        // nejdelší čekání na ceny a hodnotu ticku nově přidaných symbolů (ms)
+#define ARFT_DATA_POLL_MS     50          // pauza mezi pokusy o data symbolu (ms)
 #define ARFT_LOTSTEP_EPS      1e-7        // tolerance plovoucí čárky při zaokrouhlení lotu
 #define ARFT_MAX_RISK_PCT     100.0       // horní mez rizika na obchod (%)
 #define ARFT_MAX_YAML_PCT     1000.0      // horní mez % ze vzdálenosti vstup-cíl v režimu podle YAML
@@ -422,9 +422,19 @@ int PlaceOrdersFromFile(const datetime now, const bool isTest)
       return(ARFT_PLACE_ERROR);
      }
 
+   //--- Všechny symboly se přidají do Market Watch hned: terminál pak stahuje
+   //--- jejich ceny i kurzy pro přepočet hodnoty ticku (např. USDJPY pro
+   //--- NZDJPY) souběžně se zadáváním prvních pokynů. Nenalezený symbol
+   //--- zaloguje až PlaceSetup. Na data všech symbolů se čeká společně
+   //--- nejvýš ARFT_DATA_WAIT_MS od jejich přidání, ne zvlášť u každého.
+   string symbol;
+   for(int i = 0; i < count; i++)
+      ResolveSymbol(setups[i].symbol, symbol);
+   const ulong dataDeadline = GetTickCount64() + ARFT_DATA_WAIT_MS;
+
    int placed = 0;
    for(int i = 0; i < count; i++)
-      if(PlaceSetup(setups[i], isTest))
+      if(PlaceSetup(setups[i], isTest, dataDeadline))
          placed++;
 
    const string summary = StringFormat("Zadáno %d z %d pokynů.", placed, count);
@@ -437,11 +447,12 @@ int PlaceOrdersFromFile(const datetime now, const bool isTest)
 
 //+------------------------------------------------------------------+
 //| Zadá jeden čekající stop pokyn podle záznamu ze souboru.         |
-//|  setup  - obchod ze souboru                                      |
-//|  isTest - pokyn z testovacího tlačítka                           |
+//|  setup        - obchod ze souboru                                |
+//|  isTest       - pokyn z testovacího tlačítka                     |
+//|  dataDeadline - do kdy (GetTickCount64) čekat na data symbolu    |
 //| Pokyn, který vzhledem k aktuální ceně nelze zadat, se přeskočí.  |
 //+------------------------------------------------------------------+
-bool PlaceSetup(const STradeSetup &setup, const bool isTest)
+bool PlaceSetup(const STradeSetup &setup, const bool isTest, const ulong dataDeadline)
   {
    string symbol;
    if(!ResolveSymbol(setup.symbol, symbol))
@@ -467,7 +478,7 @@ bool PlaceSetup(const STradeSetup &setup, const bool isTest)
      }
 
    MqlTick tick;
-   if(!WaitForTick(symbol, tick))
+   if(!WaitForSymbolData(symbol, dataDeadline, tick))
      {
       LogError(StringFormat("%s: chybí aktuální cena %s.", setup.key, symbol));
       return(false);
@@ -895,17 +906,27 @@ bool SymbolTradable(const string symbol, const bool isBuy, string &reason)
    return(reason == "");
   }
 
-//--- Aktuální cena symbolu; u symbolu právě přidaného do Market Watch
-//--- chvíli počká na první tick
-bool WaitForTick(const string symbol, MqlTick &tick)
+//+------------------------------------------------------------------+
+//| Aktuální cena symbolu; u symbolu právě přidaného do Market Watch |
+//| počká na první tick i na hodnotu ticku.                          |
+//|  symbol   - obchodovaný symbol                                   |
+//|  deadline - do kdy čekat (GetTickCount64)                        |
+//|  tick     - out: tick přečtený až po dorazení dat                |
+//| Hodnota ticku křížového páru (NZDJPY na účtu v USD) potřebuje    |
+//| kurz převodního páru (USDJPY). Terminál ho po SymbolSelect načte |
+//| sám, data ale dorazí až za desítky ms - do té doby je hodnota    |
+//| ticku 0, i když bid/ask symbolu už známé jsou. Vrací false jen   |
+//| při chybějící ceně; chybějící hodnotu ticku zaloguje CalcLot.    |
+//+------------------------------------------------------------------+
+bool WaitForSymbolData(const string symbol, const ulong deadline, MqlTick &tick)
   {
-   for(int i = 0; i < ARFT_TICK_WAIT_TRIES; i++)
+   for(;;)
      {
-      if(SymbolInfoTick(symbol, tick) && tick.bid > 0.0 && tick.ask > 0.0)
-         return(true);
-      Sleep(ARFT_TICK_WAIT_MS);
+      const bool hasPrice = SymbolInfoTick(symbol, tick) && tick.bid > 0.0 && tick.ask > 0.0;
+      if((hasPrice && LossTickValue(symbol) > 0.0) || GetTickCount64() >= deadline)
+         return(hasPrice);
+      Sleep(ARFT_DATA_POLL_MS);
      }
-   return(false);
   }
 
 //--- Cena zaokrouhlená na velikost ticku a počet desetinných míst symbolu
@@ -932,20 +953,25 @@ string FormatLots(const string symbol, const double lots)
    return(DoubleToString(lots, VolumeDigits(symbol)));
   }
 
+//--- Hodnota ticku v měně účtu pro ztrátovou stranu (u křížových párů se
+//--- od TICK_VALUE liší), záložně TICK_VALUE; 0 = data zatím chybí
+double LossTickValue(const string symbol)
+  {
+   const double lossValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
+   return(lossValue > 0.0 ? lossValue : SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE));
+  }
+
 //+------------------------------------------------------------------+
 //| Ztráta na 1 lot při zásahu SL v měně účtu.                       |
 //|  symbol     - obchodovaný symbol                                 |
-//|  slDistance - vzdálenost SL od vstupu v ceně                     |
-//| Počítá se ztrátová strana ticku - u křížových párů se od         |
-//| TICK_VALUE liší. Vrací 0, když data chybí.                       |
+//|  slDistance - vzdálenost SL od vstupu v ceně (> 0)               |
+//| Vrací 0, když chybí hodnota nebo velikost ticku.                 |
 //+------------------------------------------------------------------+
 double LossPerLot(const string symbol, const double slDistance)
   {
-   double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
-   if(tickValue <= 0.0)
-      tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
-   const double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
-   if(tickValue <= 0.0 || tickSize <= 0.0 || slDistance <= 0.0)
+   const double tickValue = LossTickValue(symbol);
+   const double tickSize  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tickValue <= 0.0 || tickSize <= 0.0)
       return(0.0);
    return(slDistance / tickSize * tickValue);
   }
@@ -961,14 +987,24 @@ double LossPerLot(const string symbol, const double slDistance)
 double CalcLot(const string symbol, const double slDistance, string &reason)
   {
    reason = "";
-   const double minLot     = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-   const double maxLot     = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
-   const double step       = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-   const double balance    = AccountInfoDouble(ACCOUNT_BALANCE);
-   const double lossPerLot = LossPerLot(symbol, slDistance);
-   if(balance <= 0.0 || lossPerLot <= 0.0 || step <= 0.0)
+   const double minLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   const double maxLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   const double step    = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   const double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(balance <= 0.0 || step <= 0.0 || slDistance <= 0.0)
      {
       reason = "chybí data pro výpočet objemu";
+      return(0.0);
+     }
+
+   //--- Hodnota ticku chybí, když ani po čekání (WaitForSymbolData)
+   //--- nedorazil kurz pro přepočet měn - do logu se uvede, který
+   const double lossPerLot = LossPerLot(symbol, slDistance);
+   if(lossPerLot <= 0.0)
+     {
+      reason = StringFormat("chybí hodnota ticku %s pro přepočet %s na %s", symbol,
+                            SymbolInfoString(symbol, SYMBOL_CURRENCY_PROFIT),
+                            AccountInfoString(ACCOUNT_CURRENCY));
       return(0.0);
      }
 

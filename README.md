@@ -132,6 +132,11 @@ v časovači jednou za sekundu (nečeká na ticky symbolu grafu).
   spread`, PT i SL stejně daleko (RRR 1:1); 100 % = celý cíl.
 - Objem se dopočítá tak, aby ztráta na SL byla `riziko %` (výchozí 1 %) zůstatku účtu,
   zaokrouhlí se dolů na krok objemu. Když nestačí ani minimální lot, pokyn se nezadá.
+- Všechny symboly ze souboru se přidají do Market Watch hned po jeho načtení. Hodnotu
+  ticku křížového páru (např. NZDJPY na účtu v USD) dopočítá terminál z kurzu
+  převodního páru (USDJPY), který po přidání symbolu dorazí se zpožděním; expert proto
+  na ceny a hodnoty ticku všech symbolů ze souboru čeká společně nejvýš 3 s. Když
+  nedorazí, pokyn se nezadá a zaloguje se chybějící přepočet.
 
 ### Zrušení, OCO a zavření
 
@@ -227,5 +232,5 @@ nové verze se zvýší:
 
 Commit s novou verzí se označí tagem `vX.YY`.
 
-**Aktuální verze: 1.22**
+**Aktuální verze: 1.23**
 
