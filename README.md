@@ -220,6 +220,7 @@ sekundu přepne mezi světle a tmavě zelenou. Dokud bliká, běží hlavní smy
 ```
 MQL5/Experts/AiRobotForexTrader/AiRobotForexTrader.mq5   expert (UTF-8 s BOM)
 scripts/deploy.cmd, scripts/deploy.ps1                    nasazení a kompilace do MT5
+LICENSE                                                   licence Apache 2.0
 ```
 
 ## Verzování
@@ -238,3 +239,8 @@ Commit s novou verzí se označí tagem `vX.YY`.
 
 **Aktuální verze: 1.33**
 
+## Licence
+
+Copyright 2026 Petr Svoboda
+
+Projekt je šířen pod licencí [Apache License 2.0](LICENSE).
