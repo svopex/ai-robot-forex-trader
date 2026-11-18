@@ -11,6 +11,8 @@
 //|   - OCO: po otevření pozice smaže protilehlý pokyn téhož symbolu,|
 //|   - v čas zrušení smaže nevyplněné pokyny (v pátek dřív),        |
 //|   - pozice zavře X minut před koncem obchodní seance symbolu,    |
+//|   - filtr zpráv: před důležitou zprávou (kalendář MT5) pokyny    |
+//|     dotčeného symbolu zruší (a pozice zavře), po ní zadá znovu,  |
 //|   - vše loguje do grafu pod okno One Click Trading; nad logem je |
 //|     testovací tlačítko, které zadá obchody hned, a před ním      |
 //|     kontrolka, která bliká, dokud běží hlavní smyčka experta,    |
@@ -18,11 +20,11 @@
 //|  Jeden graf obchoduje všechny symboly ze souboru.                |
 //+------------------------------------------------------------------+
 // Verze experta - zvyšuje se před každým nasazením (viz README, Verzování)
-#define EA_VERSION "1.33"
+#define EA_VERSION "1.43"
 
 #property copyright "AiRobotForexTrader"
 #property version   EA_VERSION
-#property description "Denní čekající stop pokyny podle souboru RRRRMMDD.yaml (čtení přes kernel32.dll), objem z rizika, OCO, zrušení pokynů v daný čas a zavření pozic před koncem seance symbolu."
+#property description "Denní čekající stop pokyny podle souboru RRRRMMDD.yaml (čtení přes kernel32.dll), objem z rizika, OCO, zrušení pokynů v daný čas, filtr ekonomických zpráv a zavření pozic před koncem seance symbolu."
 
 #include <Trade\Trade.mqh>
 
@@ -54,6 +56,14 @@ enum ENUM_ARFT_STOPS
    ARFT_STOPS_YAML  = 1  // Podle YAML (% z cíle) + spread (RRR 1:1)
   };
 
+//--- Nejnižší důležitost zprávy z kalendáře MT5, kterou filtr zpráv hlídá
+//--- (hodnoty jsou přímo ENUM_CALENDAR_EVENT_IMPORTANCE)
+enum ENUM_ARFT_NEWS_IMPORTANCE
+  {
+   ARFT_NEWS_HIGH     = CALENDAR_IMPORTANCE_HIGH,    // Jen vysoká
+   ARFT_NEWS_MODERATE = CALENDAR_IMPORTANCE_MODERATE // Střední a vysoká
+  };
+
 //--- Vstupní soubor
 input group "=== Vstupní soubor ==="
 input string InpInputDir                 = "Z:\\";            // Adresář se souborem RRRRMMDD.yaml
@@ -73,6 +83,16 @@ input int    InpFixedStopsPoints         = 15;                // Pevná vzdálen
 input double InpYamlStopsPercent         = 100.0;             // Podle YAML: % ze vzdálenosti vstup-cíl (100 = celý cíl)
 input double InpRiskPercent              = 1.0;               // Riziko na obchod (% zůstatku)
 input long   InpMagic                    = 202611110800;      // Magic number
+
+//--- Filtr ekonomických zpráv (kalendář MT5): kolem zprávy se pokyny
+//--- dotčeného symbolu zruší a po ní zadají znovu
+input group "=== Filtr zpráv ==="
+input bool   InpNewsFilter               = true;              // Rušit pokyny kolem důležitých zpráv
+input ENUM_ARFT_NEWS_IMPORTANCE InpNewsImportance = ARFT_NEWS_HIGH; // Důležitost hlídaných zpráv
+input string InpNewsCurrencies           = "USD";             // Měny navíc k oběma měnám symbolu (oddělené ;)
+input int    InpNewsMinutesBefore        = 5;                 // Zrušit pokyny X minut před zprávou
+input int    InpNewsMinutesAfter         = 10;                // Znovu zadat pokyny Y minut po zprávě
+input bool   InpNewsClosePositions       = true;              // Zavřít otevřené pozice před zprávou
 
 //--- Mapování symbolů z YAML na symboly brokera
 input group "=== Mapování symbolů ==="
@@ -105,6 +125,8 @@ input int    InpOneClickShift            = 60;                // Posun tlačítk
 #define ARFT_MAX_BUTTON_LINES 10          // horní mez prázdných řádků nad logem
 #define ARFT_PLACE_ERROR      -1          // PlaceOrdersFromFile: chyba souboru / obchodování
 #define ARFT_PLACE_DISABLED   -2          // PlaceOrdersFromFile: soubor má Options trading: disabled
+#define ARFT_NEWS_REFRESH_SEC 60          // jak často znovu načíst zprávy z kalendáře (s)
+#define ARFT_NEWS_MAX_MIN     240         // horní mez minut před / po zprávě
 
 // Testovací tlačítko - rozměry v pixelech při 96 DPI. Souřadnice objektů
 // jsou ve fyzických pixelech, písmo se ale s DPI zvětšuje samo - rozměry
@@ -140,6 +162,23 @@ struct SFileOptions
    bool              trading; // trading: enabled = obchoduje se; bez volby také
   };
 
+//--- Důležitá zpráva z ekonomického kalendáře MT5
+struct SNewsEvent
+  {
+   datetime          time;     // čas vydání (čas serveru)
+   string            currency; // měna zprávy (USD, EUR, ...)
+   string            name;     // název zprávy
+  };
+
+//--- Pokyn odložený kvůli zprávě - zadá se znovu po skončení jejího okna
+struct SDeferredSetup
+  {
+   STradeSetup       setup;    // obchod ze souboru
+   string            symbol;   // symbol MT5
+   bool              isTest;   // pokyn z testovacího tlačítka
+   datetime          deadline; // konec platnosti původního pokynu (čas serveru)
+  };
+
 //--- Pravidla letního času podporovaných časových pásem
 enum ENUM_ARFT_DST
   {
@@ -165,6 +204,15 @@ string        g_logText[];                       // řádky logu v grafu, nejnov
 double        g_dpiScale        = 1.0;           // měřítko DPI monitoru (1.0 = 96 DPI)
 bool          g_oneClickShown   = false;         // bylo při umístění tlačítka vidět One Click Trading?
 string        g_commentText     = "";            // naposledy vypsaný text Comment()
+bool          g_newsActive      = false;         // filtr zpráv zapnutý a kalendář k dispozici (ne tester)
+string        g_newsCurrencies  = ";";           // měny navíc ze vstupu, hlídané u všech symbolů (";USD;EUR;")
+SNewsEvent    g_news[];                          // důležité zprávy kolem aktuálního času
+datetime      g_newsLoadedAt    = 0;             // kdy (čas serveru) se zprávy naposledy načítaly
+bool          g_newsLoaded      = false;         // podařilo se zprávy aspoň jednou načíst?
+bool          g_newsErrorLogged = false;         // chyba kalendáře už je v logu (nehlásit každou minutu)
+SDeferredSetup g_deferred[];                     // pokyny odložené kvůli zprávě
+STradeSetup   g_daySetups[];                     // obchody ze souboru dne g_daySetupsDay (zadání i obnova pokynu po zprávě)
+int           g_daySetupsDay    = 0;             // den RRRRMMDD, ke kterému patří g_daySetups
 
 //+------------------------------------------------------------------+
 //| Inicializace: kontrola vstupů, obnova denního stavu, tlačítko.   |
@@ -189,11 +237,15 @@ int OnInit()
    if(InpRiskPercent <= 0.0 || InpRiskPercent > ARFT_MAX_RISK_PCT || InpFixedStopsPoints <= 0 ||
       InpYamlStopsPercent <= 0.0 || InpYamlStopsPercent > ARFT_MAX_YAML_PCT ||
       InpCloseBeforeSessionEndMin < 0 || InpLogLines < 1 || InpLogLines > ARFT_MAX_LOG_LINES ||
-      InpButtonLines < 0 || InpButtonLines > ARFT_MAX_BUTTON_LINES)
+      InpButtonLines < 0 || InpButtonLines > ARFT_MAX_BUTTON_LINES ||
+      InpNewsMinutesBefore < 0 || InpNewsMinutesBefore > ARFT_NEWS_MAX_MIN ||
+      InpNewsMinutesAfter < 0 || InpNewsMinutesAfter > ARFT_NEWS_MAX_MIN)
      {
       PrintFormat("%sneplatné vstupy - riziko 0..%.0f %%, body PT/SL > 0, %% z YAML 0..%.0f, "
-                  "minuty před koncem seance >= 0, řádky logu 1..%d, prázdné řádky nad logem 0..%d.",
-                  ARFT_LOG_TAG, ARFT_MAX_RISK_PCT, ARFT_MAX_YAML_PCT, ARFT_MAX_LOG_LINES, ARFT_MAX_BUTTON_LINES);
+                  "minuty před koncem seance >= 0, řádky logu 1..%d, prázdné řádky nad logem 0..%d, "
+                  "minuty před / po zprávě 0..%d.",
+                  ARFT_LOG_TAG, ARFT_MAX_RISK_PCT, ARFT_MAX_YAML_PCT, ARFT_MAX_LOG_LINES, ARFT_MAX_BUTTON_LINES,
+                  ARFT_NEWS_MAX_MIN);
       return(INIT_PARAMETERS_INCORRECT);
      }
    string badPair;
@@ -202,6 +254,19 @@ int OnInit()
       Print(ARFT_LOG_TAG, "neplatné mapování symbolů '", badPair, "' - očekává se YAML=MT5;YAML=MT5.");
       return(INIT_PARAMETERS_INCORRECT);
      }
+   string badCurrency;
+   if(!ParseNewsCurrencies(InpNewsCurrencies, badCurrency))
+     {
+      Print(ARFT_LOG_TAG, "neplatná měna filtru zpráv '", badCurrency, "' - očekává se kód ze 3 písmen, např. USD;EUR.");
+      return(INIT_PARAMETERS_INCORRECT);
+     }
+
+   //--- Ve Strategy Testeru funkce kalendáře data nevracejí - filtr tam
+   //--- nepracuje. Zprávy se po startu načtou znovu (mohla se změnit
+   //--- důležitost ve vstupech).
+   g_newsActive   = InpNewsFilter && !MQLInfoInteger(MQL_TESTER);
+   g_newsLoadedAt = 0;
+   g_newsLoaded   = false;
 
    g_trade.SetExpertMagicNumber(InpMagic);
    g_trade.SetAsyncMode(false);
@@ -243,6 +308,17 @@ int OnInit()
                         InpStopsMode == ARFT_STOPS_FIXED ? StringFormat("%d b + spread", InpFixedStopsPoints)
                                                          : StringFormat("%g %% z YAML + spread", InpYamlStopsPercent),
                         InpRiskPercent, InputFilePath(ExchangeNow())));
+   if(!InpNewsFilter)
+      LogInfo("Filtr zpráv je vypnutý.");
+   else if(!g_newsActive)
+      LogWarn("Ve Strategy Testeru není ekonomický kalendář - filtr zpráv nepracuje.");
+   else
+      LogInfo(StringFormat("Filtr zpráv: důležitost %s, měny symbolu%s, pokyny zrušit %d min před zprávou, "
+                           "znovu zadat %d min po ní, pozice %s.",
+                           InpNewsImportance == ARFT_NEWS_HIGH ? "vysoká" : "střední a vysoká",
+                           g_newsCurrencies != ";" ? " + " + Trim(InpNewsCurrencies) : "",
+                           InpNewsMinutesBefore, InpNewsMinutesAfter,
+                           InpNewsClosePositions ? "před zprávou zavřít" : "nechat"));
 
    if(!MQLInfoInteger(MQL_DLLS_ALLOWED))
       LogError("Import DLL není povolen - soubor nepůjde načíst. Zapněte „Povolit import DLL“ ve vlastnostech experta.");
@@ -271,6 +347,7 @@ void OnTimer()
   {
    const datetime now = ExchangeNow();
    CheckDailyPlacement(now);
+   PlaceDeferredAfterNews();
 
    //--- Úklid se po neúspěšném požadavku na chvíli pozastaví, aby se
    //--- neopakoval každou sekundu a nezahltil log
@@ -278,6 +355,7 @@ void OnTimer()
      {
       EnforceOco();
       ExpirePendings();
+      ApplyNewsFilter();
       CloseBeforeSessionEnd();
      }
 
@@ -397,30 +475,11 @@ string DoneVarName()
 //+------------------------------------------------------------------+
 int PlaceOrdersFromFile(const datetime now, const bool isTest)
   {
-   const string path = InputFilePath(now);
-   LogInfo(StringFormat("%s: načítám %s", isTest ? "Test" : "Denní zadání", path));
+   LogInfo(StringFormat("%s: načítám %s", isTest ? "Test" : "Denní zadání", InputFilePath(now)));
 
-   string reason;
-   string text;
-   if(!ReadTextFile(path, text, reason))
-     {
-      LogError(StringFormat("Soubor %s nelze načíst: %s.", path, reason));
-      return(ARFT_PLACE_ERROR);
-     }
-
-   STradeSetup  setups[];
-   SFileOptions options;
-   ParseYaml(text, setups, options);
-
-   //--- Soubor sám vypíná obchodování ve svátek, bank holiday a o víkendu
-   //--- (Options: trading: disabled) - nezadá se nic, ani testovacím tlačítkem.
-   //--- Záznamy se pak ani neověřují, aby log nezahlcovala varování.
-   if(!options.trading)
-     {
-      LogInfo("Soubor vypíná obchodování (Options trading) - dnes se nic nezadává.");
-      return(ARFT_PLACE_DISABLED);
-     }
-   const int count = ValidateSetups(setups);
+   const int count = LoadSetups(now);
+   if(count < 0)
+      return(count);
    if(count == 0)
      {
       LogWarn("Soubor neobsahuje žádný platný obchod.");
@@ -429,6 +488,7 @@ int PlaceOrdersFromFile(const datetime now, const bool isTest)
 
    //--- Povolení obchodování se kontroluje až po souboru, aby v den bez
    //--- obchodování nehlásil chybu vypnutý Algo Trading
+   string reason;
    if(!TradingAllowed(reason))
      {
       LogError("Obchodování není povoleno: " + reason + ".");
@@ -442,20 +502,67 @@ int PlaceOrdersFromFile(const datetime now, const bool isTest)
    //--- nejvýš ARFT_DATA_WAIT_MS od jejich přidání, ne zvlášť u každého.
    string symbol;
    for(int i = 0; i < count; i++)
-      ResolveSymbol(setups[i].symbol, symbol);
+      ResolveSymbol(g_daySetups[i].symbol, symbol);
    const ulong dataDeadline = GetTickCount64() + ARFT_DATA_WAIT_MS;
 
-   int placed = 0;
+   //--- Obchod na symbolu, který je právě v okně důležité zprávy, se
+   //--- nezadá hned, ale odloží se a zadá až po skončení okna
+   int placed   = 0;
+   int deferred = 0;
    for(int i = 0; i < count; i++)
-      if(PlaceSetup(setups[i], isTest, dataDeadline))
+     {
+      if(DeferForNews(g_daySetups[i], isTest))
+         deferred++;
+      else if(PlaceSetup(g_daySetups[i], isTest, dataDeadline))
          placed++;
+     }
 
-   const string summary = StringFormat("Zadáno %d z %d pokynů.", placed, count);
-   if(placed == count)
+   const string summary = StringFormat("Zadáno %d z %d pokynů%s.", placed, count,
+                                       deferred > 0 ? StringFormat(", %d odloženo kvůli zprávě", deferred) : "");
+   if(placed + deferred == count)
       LogInfo(summary);
    else
       LogWarn(summary);
    return(placed);
+  }
+
+//+------------------------------------------------------------------+
+//| Načte a ověří obchody ze souboru dne do g_daySetups - z nich se  |
+//| zadává a podle nich filtr zpráv po zprávě znovu zadá smazané     |
+//| pokyny.                                                          |
+//|  exchangeTime - čas v pásmu burzy (určuje název souboru)         |
+//| Vrací počet obchodů, ARFT_PLACE_ERROR při chybě souboru,         |
+//| ARFT_PLACE_DISABLED při Options trading: disabled. Den se uloží  |
+//| i při neúspěchu (s prázdným seznamem), aby filtr zpráv nečetl    |
+//| vadný soubor u každého pokynu znovu.                             |
+//+------------------------------------------------------------------+
+int LoadSetups(const datetime exchangeTime)
+  {
+   g_daySetupsDay = DayKey(exchangeTime);
+   ArrayResize(g_daySetups, 0);
+
+   const string path = InputFilePath(exchangeTime);
+   string reason;
+   string text;
+   if(!ReadTextFile(path, text, reason))
+     {
+      LogError(StringFormat("Soubor %s nelze načíst: %s.", path, reason));
+      return(ARFT_PLACE_ERROR);
+     }
+
+   SFileOptions options;
+   ParseYaml(text, g_daySetups, options);
+
+   //--- Soubor sám vypíná obchodování ve svátek, bank holiday a o víkendu
+   //--- (Options: trading: disabled) - nezadá se nic, ani testovacím tlačítkem.
+   //--- Záznamy se pak ani neověřují, aby log nezahlcovala varování.
+   if(!options.trading)
+     {
+      ArrayResize(g_daySetups, 0);
+      LogInfo("Soubor vypíná obchodování (Options trading) - dnes se nic nezadává.");
+      return(ARFT_PLACE_DISABLED);
+     }
+   return(ValidateSetups(g_daySetups));
   }
 
 //+------------------------------------------------------------------+
@@ -552,8 +659,7 @@ bool PlaceSetup(const STradeSetup &setup, const bool isTest, const ulong dataDea
    OrderExpiration(symbol, typeTime, expiration);
 
    g_trade.SetTypeFillingBySymbol(symbol);
-   const string comment = StringSubstr((isTest ? ARFT_COMMENT_TEST : ARFT_COMMENT) + setup.key,
-                                       0, ARFT_COMMENT_MAX);
+   const string comment = OrderComment(setup, isTest);
    const bool sent = isBuy ? g_trade.BuyStop(lots, entry, symbol, sl, tp, typeTime, expiration, comment)
                            : g_trade.SellStop(lots, entry, symbol, sl, tp, typeTime, expiration, comment);
    if(!RequestAccepted(sent))
@@ -567,6 +673,13 @@ bool PlaceSetup(const STradeSetup &setup, const bool isTest, const ulong dataDea
                         FormatLots(symbol, lots), DoubleToString(entry, digits),
                         DoubleToString(sl, digits), DoubleToString(tp, digits), g_trade.ResultOrder()));
    return(true);
+  }
+
+//--- Komentář pokynu: prefix podle původu pokynu + název záznamu, zkrácený
+//--- na délku, kterou server přijme (podle něj se pokyn po zprávě dohledá)
+string OrderComment(const STradeSetup &setup, const bool isTest)
+  {
+   return(StringSubstr((isTest ? ARFT_COMMENT_TEST : ARFT_COMMENT) + setup.key, 0, ARFT_COMMENT_MAX));
   }
 
 //+------------------------------------------------------------------+
@@ -726,10 +839,10 @@ bool DeadlinePassed(const string symbol, const datetime deadline, const datetime
    return(serverNow >= deadline && InTradeSession(symbol, serverNow));
   }
 
-//--- Smaže čekající pokyn experta
-void DeleteOrder(const ulong ticket)
+//--- Smaže čekající pokyn experta; vrací true, když server smazání přijal
+bool DeleteOrder(const ulong ticket)
   {
-   CheckSweepRequest(g_trade.OrderDelete(ticket), StringFormat("Pokyn #%I64u nelze smazat", ticket));
+   return(CheckSweepRequest(g_trade.OrderDelete(ticket), StringFormat("Pokyn #%I64u nelze smazat", ticket)));
   }
 
 //--- Zavře pozici experta
@@ -740,13 +853,15 @@ void ClosePosition(const ulong ticket, const string symbol)
   }
 
 //--- Vyhodnotí požadavek úklidu; při neúspěchu zaloguje chybu a úklid
-//--- na chvíli pozastaví, aby se neopakoval každou sekundu
-void CheckSweepRequest(const bool sent, const string what)
+//--- na chvíli pozastaví, aby se neopakoval každou sekundu. Vrací true,
+//--- když server požadavek přijal.
+bool CheckSweepRequest(const bool sent, const string what)
   {
    if(RequestAccepted(sent))
-      return;
+      return(true);
    LogError(StringFormat("%s - %u %s.", what, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription()));
    g_sweepPauseUntil = TimeTradeServer() + ARFT_SWEEP_PAUSE_SEC;
+   return(false);
   }
 
 //--- Prošel požadavek? CTrade vrací true i při některých odmítnutích,
@@ -882,6 +997,312 @@ void OnOrderArchived(const ulong order)
       LogInfo(what + " vypršel.");
    else if(state == ORDER_STATE_REJECTED)
       LogWarn(what + " odmítnut.");
+  }
+
+//====================================================================
+// Filtr ekonomických zpráv (kalendář MT5)
+//====================================================================
+
+//+------------------------------------------------------------------+
+//| Rozebere seznam měn navíc "USD;EUR" (oddělovač ; nebo ,) do      |
+//| g_newsCurrencies ve tvaru ";USD;EUR;" (hledá se StringFind).     |
+//|  text        - hodnota vstupu InpNewsCurrencies                  |
+//|  badCurrency - out: první neplatná položka                       |
+//+------------------------------------------------------------------+
+bool ParseNewsCurrencies(const string text, string &badCurrency)
+  {
+   g_newsCurrencies = ";";
+   string list = text;
+   StringReplace(list, ",", ";");
+   string items[];
+   const int count = StringSplit(list, ';', items);
+   for(int i = 0; i < count; i++)
+     {
+      string currency = Trim(items[i]);
+      if(currency == "")
+         continue;
+      StringToUpper(currency);
+
+      //--- Kód měny = přesně 3 písmena A-Z
+      bool valid = StringLen(currency) == 3;
+      for(int c = 0; valid && c < 3; c++)
+        {
+         const ushort ch = StringGetCharacter(currency, c);
+         valid = ch >= 'A' && ch <= 'Z';
+        }
+      if(!valid)
+        {
+         badCurrency = items[i];
+         return(false);
+        }
+      g_newsCurrencies += currency + ";";
+     }
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| Načte důležité zprávy z kalendáře MT5 - nejvýš jednou za         |
+//| ARFT_NEWS_REFRESH_SEC. Bere zprávy všech měn (symboly mají různé |
+//| měny, třídí až FindNews) od začátku okna "po zprávě" na den      |
+//| dopředu. Když kalendář selže, platí naposledy načtené zprávy     |
+//| a chyba se zaloguje jen jednou.                                  |
+//|  serverNow - aktuální čas serveru (čas zpráv je v čase serveru)  |
+//+------------------------------------------------------------------+
+void RefreshNews(const datetime serverNow)
+  {
+   if(g_newsLoadedAt != 0 && serverNow < g_newsLoadedAt + ARFT_NEWS_REFRESH_SEC)
+      return;
+   g_newsLoadedAt = serverNow;
+
+   MqlCalendarValue values[];
+   ResetLastError();
+   if(!CalendarValueHistory(values, serverNow - InpNewsMinutesAfter * 60, serverNow + ARFT_DAY_SECONDS))
+     {
+      if(!g_newsErrorLogged)
+         LogWarn(StringFormat("Ekonomický kalendář nelze načíst (chyba %d) - %s.", ::GetLastError(),
+                              g_newsLoaded ? "platí naposledy načtené zprávy" : "filtr zpráv zatím nepracuje"));
+      g_newsErrorLogged = true;
+      return;
+     }
+
+   //--- Jen zprávy dané důležitosti s časem vydání; celodenní události
+   //--- (svátky) a zprávy s dosud neznámým časem okno kolem sebe nemají
+   const ENUM_CALENDAR_EVENT_IMPORTANCE minImportance = (ENUM_CALENDAR_EVENT_IMPORTANCE)InpNewsImportance;
+   ArrayResize(g_news, 0);
+   const int total = ArraySize(values);
+   for(int i = 0; i < total; i++)
+     {
+      MqlCalendarEvent   calEvent;
+      MqlCalendarCountry country;
+      if(!CalendarEventById(values[i].event_id, calEvent) || calEvent.importance < minImportance ||
+         calEvent.time_mode == CALENDAR_TIMEMODE_DATE || calEvent.time_mode == CALENDAR_TIMEMODE_TENTATIVE ||
+         !CalendarCountryById((long)calEvent.country_id, country))
+         continue;
+      const int n = ArraySize(g_news);
+      ArrayResize(g_news, n + 1, total);
+      g_news[n].time     = values[i].time;
+      g_news[n].currency = country.currency;
+      g_news[n].name     = calEvent.name;
+     }
+
+   //--- První načtení a obnova po chybě se zalogují
+   if(!g_newsLoaded || g_newsErrorLogged)
+      LogInfo(StringFormat("Ekonomický kalendář načten: %d důležitých zpráv na 24 h dopředu.", ArraySize(g_news)));
+   g_newsLoaded      = true;
+   g_newsErrorLogged = false;
+  }
+
+//+------------------------------------------------------------------+
+//| Najde důležitou zprávu, která se týká symbolu a vychází v čase   |
+//| from..to (včetně). Zprávy musí být načtené (RefreshNews).        |
+//|  symbol - symbol MT5; hlídají se obě jeho měny a měny navíc      |
+//|  from   - nejdřívější čas vydání (čas serveru)                   |
+//|  to     - nejpozdější čas vydání (čas serveru)                   |
+//|  what   - out: popis zprávy pro log (měna, název, čas burzy)     |
+//+------------------------------------------------------------------+
+bool FindNews(const string symbol, const datetime from, const datetime to, string &what)
+  {
+   what = "";
+   const string base   = SymbolInfoString(symbol, SYMBOL_CURRENCY_BASE);
+   const string profit = SymbolInfoString(symbol, SYMBOL_CURRENCY_PROFIT);
+   for(int i = 0; i < ArraySize(g_news); i++)
+     {
+      const string currency = g_news[i].currency;
+      if(g_news[i].time < from || g_news[i].time > to ||
+         (currency != base && currency != profit && StringFind(g_newsCurrencies, ";" + currency + ";") < 0))
+         continue;
+      what = StringFormat("%s %s v %s", currency, g_news[i].name,
+                          TimeToString(ServerToExchange(g_news[i].time), TIME_MINUTES));
+      return(true);
+     }
+   return(false);
+  }
+
+//--- Je symbol v okně zprávy (X minut před až Y minut po vydání)? V něm
+//--- se čekající pokyny nedrží ani nezadávají.
+bool NewsBlocksPending(const string symbol, const datetime serverNow, string &what)
+  {
+   return(FindNews(symbol, serverNow - InpNewsMinutesAfter * 60 + 1, serverNow + InpNewsMinutesBefore * 60, what));
+  }
+
+//+------------------------------------------------------------------+
+//| Filtr zpráv - úklid (každou sekundu, mimo pauzu úklidu): v okně  |
+//| zprávy smaže čekající pokyny dotčených symbolů a odloží je, před |
+//| zprávou volitelně zavře pozice.                                  |
+//+------------------------------------------------------------------+
+void ApplyNewsFilter()
+  {
+   if(!g_newsActive)
+      return;
+   const datetime serverNow = TimeTradeServer();
+   RefreshNews(serverNow);
+   string what;
+
+   //--- Čekající pokyny v okně zprávy: údaje se přečtou před smazáním,
+   //--- odloží se jen pokyn, jehož smazání server přijal
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      const ulong ticket = OurPendingTicket(i);
+      if(ticket == 0)
+         continue;
+      const string symbol = OrderGetString(ORDER_SYMBOL);
+      if(!NewsBlocksPending(symbol, serverNow, what))
+         continue;
+      const datetime setupTime = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
+      const double   price     = OrderGetDouble(ORDER_PRICE_OPEN);
+      const bool     isBuy     = IsBuyOrderType(OrderGetInteger(ORDER_TYPE));
+      const string   comment   = OrderGetString(ORDER_COMMENT);
+      string why;
+      const datetime deadline = PendingDeadline(symbol, setupTime, why);
+      LogInfo(StringFormat("Zpráva %s - ruším pokyn #%I64u %s.", what, ticket, symbol));
+      if(DeleteOrder(ticket))
+         DeferDeletedOrder(symbol, setupTime, price, isBuy, comment, deadline);
+     }
+
+   //--- Pozice se zavírají jen před zprávou (X minut před až čas vydání);
+   //--- po vydání by se zavíraly v nejširším spreadu
+   if(InpNewsClosePositions)
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+        {
+         const ulong ticket = OurPositionTicket(i);
+         if(ticket == 0)
+            continue;
+         const string symbol = PositionGetString(POSITION_SYMBOL);
+         if(!FindNews(symbol, serverNow, serverNow + InpNewsMinutesBefore * 60, what))
+            continue;
+         LogInfo(StringFormat("Zpráva %s - zavírám pozici #%I64u %s.", what, ticket, symbol));
+         ClosePosition(ticket, symbol);
+        }
+  }
+
+//+------------------------------------------------------------------+
+//| Zadá znovu odložené pokyny symbolů, jejichž okno zprávy skončilo |
+//| (každou sekundu). Není to úklid - běží i během pauzy úklidu.     |
+//+------------------------------------------------------------------+
+void PlaceDeferredAfterNews()
+  {
+   if(ArraySize(g_deferred) == 0)
+      return;
+   const datetime serverNow = TimeTradeServer();
+   RefreshNews(serverNow);
+
+   //--- Na data symbolů se čeká společně, ne zvlášť u každého pokynu.
+   //--- Na pořadí nezáleží: zpracovaný prvek nahradí poslední (už prošlý).
+   const ulong dataDeadline = GetTickCount64() + ARFT_DATA_WAIT_MS;
+   string what;
+   for(int i = ArraySize(g_deferred) - 1; i >= 0; i--)
+     {
+      if(NewsBlocksPending(g_deferred[i].symbol, serverNow, what))
+         continue;
+      PlaceDeferred(g_deferred[i], dataDeadline);
+      const int last = ArraySize(g_deferred) - 1;
+      g_deferred[i] = g_deferred[last];
+      ArrayResize(g_deferred, last);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Odloží obchod, jehož symbol je právě v okně zprávy - zadá se až  |
+//| po něm (viz PlaceDeferredAfterNews).                             |
+//|  setup  - obchod ze souboru                                      |
+//|  isTest - pokyn z testovacího tlačítka                           |
+//| Vrací true, když se obchod odložil.                              |
+//+------------------------------------------------------------------+
+bool DeferForNews(const STradeSetup &setup, const bool isTest)
+  {
+   if(!g_newsActive)
+      return(false);
+   string symbol;
+   string what;
+   const datetime serverNow = TimeTradeServer();
+   RefreshNews(serverNow);
+   if(!ResolveSymbol(setup.symbol, symbol) || !NewsBlocksPending(symbol, serverNow, what))
+      return(false);
+   string why;
+   AddDeferred(setup, symbol, isTest, PendingDeadline(symbol, serverNow, why));
+   LogInfo(StringFormat("%s: zpráva %s - pokyn se zadá až po ní.", setup.key, what));
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| Odloží pokyn smazaný kvůli zprávě. K pokynu se dohledá obchod ze |
+//| souboru dne, kdy byl zadán (symbol, směr a cena; přednost má     |
+//| shodný komentář), aby šel po zprávě zadat znovu jako původně -   |
+//| i po restartu experta.                                           |
+//|  symbol    - symbol MT5 pokynu                                   |
+//|  setupTime - čas zadání pokynu (čas serveru)                     |
+//|  price     - cena pokynu                                         |
+//|  isBuy     - nákupní pokyn                                       |
+//|  comment   - komentář pokynu                                     |
+//|  deadline  - konec platnosti pokynu (čas serveru)                |
+//+------------------------------------------------------------------+
+void DeferDeletedOrder(const string symbol, const datetime setupTime, const double price,
+                       const bool isBuy, const string comment, const datetime deadline)
+  {
+   //--- Obchody dne jsou v paměti od zadání; ze souboru se čtou jen po
+   //--- restartu experta nebo u pokynu z jiného dne (i neúspěšné čtení
+   //--- se pro den zapamatuje, viz LoadSetups)
+   const datetime setupExchange = ServerToExchange(setupTime);
+   if(g_daySetupsDay != DayKey(setupExchange))
+      LoadSetups(setupExchange);
+
+   const bool   isTest = StringFind(comment, ARFT_COMMENT_TEST) == 0;
+   const double point  = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   int found = -1;
+   for(int i = 0; i < ArraySize(g_daySetups); i++)
+     {
+      string resolved;
+      if(!ResolveSymbol(g_daySetups[i].symbol, resolved) || resolved != symbol ||
+         (SetupDirection(g_daySetups[i]) > 0) != isBuy ||
+         MathAbs(NormalizePrice(symbol, g_daySetups[i].entry) - price) > point / 2)
+         continue;
+      found = i;
+      if(OrderComment(g_daySetups[i], isTest) == comment)
+         break;
+     }
+   if(found < 0)
+     {
+      LogWarn(StringFormat("Pokyn %s @ %s nemá záznam v souboru - po zprávě se znovu nezadá.", symbol,
+                           DoubleToString(price, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS))));
+      return;
+     }
+   AddDeferred(g_daySetups[found], symbol, isTest, deadline);
+  }
+
+//--- Přidá obchod do seznamu pokynů odložených kvůli zprávě
+void AddDeferred(const STradeSetup &setup, const string symbol, const bool isTest, const datetime deadline)
+  {
+   const int n = ArraySize(g_deferred);
+   ArrayResize(g_deferred, n + 1);
+   g_deferred[n].setup    = setup;
+   g_deferred[n].symbol   = symbol;
+   g_deferred[n].isTest   = isTest;
+   g_deferred[n].deadline = deadline;
+  }
+
+//+------------------------------------------------------------------+
+//| Zadá znovu pokyn odložený kvůli zprávě (lot z aktuálního         |
+//| zůstatku, PT/SL s aktuálním spreadem). Po konci platnosti        |
+//| původního pokynu (čas zrušení) se už nezadává.                   |
+//|  item         - odložený pokyn                                   |
+//|  dataDeadline - do kdy (GetTickCount64) čekat na data symbolu    |
+//+------------------------------------------------------------------+
+void PlaceDeferred(const SDeferredSetup &item, const ulong dataDeadline)
+  {
+   //--- Pokyn s platností kratší než ARFT_MIN_EXPIRY_SEC by úklid hned smazal
+   if(TimeTradeServer() > item.deadline - ARFT_MIN_EXPIRY_SEC)
+     {
+      LogInfo(StringFormat("%s: po zprávě už skončila platnost pokynu - znovu se nezadává.", item.setup.key));
+      return;
+     }
+   string reason;
+   if(!TradingAllowed(reason))
+     {
+      LogError(StringFormat("%s: po zprávě nelze zadat znovu - %s.", item.setup.key, reason));
+      return;
+     }
+   LogInfo(StringFormat("%s: okno zprávy skončilo, zadávám pokyn znovu.", item.setup.key));
+   PlaceSetup(item.setup, item.isTest, dataDeadline);
   }
 
 //====================================================================
@@ -1728,6 +2149,9 @@ void ShowComment()
    text += StringFormat("AiRobotForexTrader %s | burza %s | zadání %s: %s | zrušení %s | čekající %d | pozice %d",
                         EA_VERSION, TimeToString(now, TIME_MINUTES), InpPlaceTime, dayState,
                         TimeToString(CancelTimeFor(now), TIME_MINUTES), pendings, positions);
+   //--- Pokyny čekající na konec okna zprávy (jen když nějaké jsou)
+   if(ArraySize(g_deferred) > 0)
+      text += StringFormat(" | odloženo %d", ArraySize(g_deferred));
    for(int i = 0; i < ArraySize(g_logText) && StringLen(g_logText[i]) > 0; i++)
       text += "\n" + g_logText[i];
 

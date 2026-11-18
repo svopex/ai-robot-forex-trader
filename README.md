@@ -153,6 +153,28 @@ v časovači jednou za sekundu (nečeká na ticky symbolu grafu).
 - Pokyny a pozice experta se poznají podle magic number, takže správa přežije restart
   experta i terminálu.
 
+### Filtr zpráv
+
+Při důležité ekonomické zprávě se stop pokyny i SL vyplňují se skluzem a ztráta může být
+násobkem plánovaného rizika. Expert proto hlídá zprávy z ekonomického kalendáře MT5
+(`CalendarValueHistory`, načítá se jednou za minutu na 24 h dopředu):
+
+- Hlídají se zprávy zvolené důležitosti (výchozí jen **vysoká**) v měnách, které se
+  symbolu týkají: obě měny symbolu (`SYMBOL_CURRENCY_BASE`, `SYMBOL_CURRENCY_PROFIT`) a
+  měny navíc ze vstupu (výchozí `USD` – americké zprávy hýbou i křížovými páry).
+  Celodenní události (svátky) a zprávy bez známého času se neberou.
+- **Okno zprávy** je od X minut před vydáním (výchozí 5) do Y minut po něm (výchozí 10).
+  V okně expert čekající pokyny dotčeného symbolu **smaže** a nové nezadá – ani při
+  denním zadání a testovacím tlačítkem; takové pokyny se odloží.
+- **Po skončení okna** se odložené pokyny zadají znovu podle záznamu ze souboru (lot
+  z aktuálního zůstatku, PT/SL s aktuálním spreadem). Jen do konce platnosti původního
+  pokynu (čas zrušení) a jen pokud je cena stále před vstupem – jinak se přeskočí
+  a zaloguje. Záznam k pokynu se dohledá v souboru dne podle symbolu, směru a ceny.
+- **Otevřené pozice** dotčeného symbolu se X minut před zprávou zavřou (lze vypnout);
+  po vydání zprávy se kvůli širokému spreadu už nezavírají.
+- Když kalendář nejde načíst, zaloguje se to jednou a platí naposledy načtené zprávy
+  (dokud se nenačtou poprvé, filtr nepracuje).
+
 ### Testovací tlačítko
 
 Tlačítko **ZADAT OBCHODY ZE SOUBORU (TEST)** nad logem okamžitě načte dnešní soubor
@@ -173,7 +195,8 @@ Market Watch a mapování se zaloguje.
 
 Log se vypisuje příkazem `Comment()` vlevo nahoře – MT5 ho sám posune pod okno
 *One Click Trading*. První řádek je stav (verze, čas burzy, stav dnešního zadání, čas
-zrušení, počet čekajících pokynů a pozic experta), pod ním log – nejnovější zpráva
+zrušení, počet čekajících pokynů a pozic experta, případně počet pokynů odložených kvůli
+zprávě), pod ním log – nejnovější zpráva
 nahoře, chyby s prefixem `CHYBA:`, upozornění s `POZOR:`. Nad textem jsou prázdné
 řádky, ve kterých leží testovací tlačítko. Vše se zapisuje i do Expert logu s
 prefixem `ARFT:`.
@@ -197,6 +220,12 @@ sekundu přepne mezi světle a tmavě zelenou. Dokud bliká, běží hlavní smy
 | Podle YAML: % ze vzdálenosti vstup-cíl | `100` | jen v režimu podle YAML; např. 30, 60, 130 |
 | Riziko na obchod | `1.0` | % zůstatku účtu |
 | Magic number | `202611110800` | odlišuje pokyny a pozice experta |
+| Rušit pokyny kolem důležitých zpráv | `true` | zapíná filtr zpráv |
+| Důležitost hlídaných zpráv | Jen vysoká | Jen vysoká / Střední a vysoká |
+| Měny navíc k oběma měnám symbolu | `USD` | oddělené `;`, prázdné = jen měny symbolu |
+| Zrušit pokyny X minut před zprávou | `5` | 0–240 |
+| Znovu zadat pokyny Y minut po zprávě | `10` | 0–240 |
+| Zavřít otevřené pozice před zprávou | `true` | X minut před zprávou |
 | Ruční mapování symbolů | prázdné | `YAML=MT5` oddělené `;` |
 | Počet řádků logu | `15` | |
 | Prázdné řádky nad logem | `3` | místo pro testovací tlačítko |
@@ -214,6 +243,9 @@ sekundu přepne mezi světle a tmavě zelenou. Dokud bliká, běží hlavní smy
 
 - Čas burzy se odvozuje z hodin počítače – musí jít správně.
 - Ve Strategy Testeru vrací `TimeGMT()` čas serveru, čas burzy tam proto nesedí.
+- Ve Strategy Testeru není ekonomický kalendář – filtr zpráv tam nepracuje.
+- Seznam pokynů odložených kvůli zprávě je jen v paměti: když se expert během okna
+  zprávy restartuje, odložené pokyny se po zprávě znovu nezadají.
 
 ## Struktura projektu
 
@@ -237,7 +269,7 @@ nové verze se zvýší:
 
 Commit s novou verzí se označí tagem `vX.YY`.
 
-**Aktuální verze: 1.33**
+**Aktuální verze: 1.43**
 
 ## Licence
 
